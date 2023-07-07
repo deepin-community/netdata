@@ -1,0 +1,15 @@
+Author: Daniel Baumann <daniel.baumann@progress-linux.org>
+Description: Disabling to send emails by default.
+
+diff -Naurp netdata.orig/health/notifications/health_alarm_notify.conf netdata/health/notifications/health_alarm_notify.conf
+--- netdata.orig/health/notifications/health_alarm_notify.conf
++++ netdata/health/notifications/health_alarm_notify.conf
+@@ -199,7 +199,7 @@ sendsms=""
+ EMAIL_SENDER=""
+ 
+ # enable/disable sending emails
+-SEND_EMAIL="YES"
++SEND_EMAIL="NO"
+ 
+ # if a role recipient is not configured, an email will be send to:
+ DEFAULT_RECIPIENT_EMAIL="root"
