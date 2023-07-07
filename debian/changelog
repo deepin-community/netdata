@@ -1,5 +1,28 @@
-template-repository (1.0-1) unstable; urgency=medium
+netdata (1.40.1-1) unstable; urgency=medium
 
-  * Initial release
+  * Initial release (Closes: #nnnn)  <nnnn is the bug number of your ITP>
+  * This is a packaged version which is suitable for deepin23 sys.
 
- -- Tsic404 <liuheng@deepin.org>  Sat, 28 Jan 2023 13:46:49 +0800
+ -- Cruise.zrz <Cruise.zrz@gmail.com>  Fri, 07 Jul 2023 17:23:27 +0800
+
+netdata (1.40.1-1) sid; urgency=medium
+
+  * Uploading to sid.
+  * Merging upstream version 1.40.1.
+
+ -- Daniel Baumann <daniel.baumann@progress-linux.org>  Tue, 27 Jun 2023 20:46:26 +0200
+
+netdata (1.40.0-2) sid; urgency=medium
+
+  * Uploading to sid.
+  * Creating empty directories to fix FTBFS when building from git.
+  * Removing initscript in favour of systemd unit.
+
+ -- Daniel Baumann <daniel.baumann@progress-linux.org>  Mon, 26 Jun 2023 07:08:23 +0200
+
+netdata (1.40.0-1) sid; urgency=medium
+
+  * Uploading to sid.
+  * Merging upstream version 1.40.0.
+
+ -- Daniel Baumann <daniel.baumann@progress-linux.org>  Wed, 14 Jun 2023 21:20:41 +0200
