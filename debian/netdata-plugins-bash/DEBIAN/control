@@ -1,0 +1,22 @@
+Package: netdata-plugins-bash
+Source: netdata
+Version: 1.40.1-1
+Architecture: all
+Maintainer: Cruise.zrz <Cruise.zrz@gmail.com>
+Installed-Size: 5108
+Depends: netdata-core (>= 1.40.1-1) | netdata-core-no-sse (>= 1.40.1-1)
+Suggests: fping
+Enhances: netdata-core, netdata-core-no-sse
+Breaks: netdata-core (<< 1.19.0-2~), netdata-core-no-sse (<< 1.19.0-2~)
+Replaces: netdata-core (<< 1.19.0-2~), netdata-core-no-sse (<< 1.19.0-2~)
+Provides: netdata-plugins
+Section: net
+Priority: optional
+Multi-Arch: foreign
+Homepage: https://github.com/deepin-community/netdata
+Description: real-time performance monitoring (bash plugins)
+ Netdata is distributed, real-time, performance and health monitoring for
+ systems and applications. It provides insights of everything happening on the
+ systems it runs using interactive web dashboards.
+ .
+ This package contains the plugins using bash.

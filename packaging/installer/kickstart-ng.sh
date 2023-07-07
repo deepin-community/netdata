@@ -1,0 +1,1 @@
+/persistent/home/zrz/Project/deb_pr/new2/pr_table/netdata_1.40.1.orig/netdata-1.40.1/packaging/installer/kickstart-ng.sh

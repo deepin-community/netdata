@@ -1,0 +1,16 @@
+#!/bin/sh
+
+piddir="/var/run/netdata/netdata.pid"
+pidfile="${piddir}/netdata.pid"
+
+cachedir="/var/cache/netdata"
+
+command="/usr/sbin/netdata"
+command_args="-P ${pidfile} -D"
+
+[ ! -d "${piddir}" ] && mkdir -p "${piddir}"
+[ ! -d "${cachedir}" ] && mkdir -p "${cachedir}"
+chown -R nobody "${piddir}"
+chown -R nobody "${cachedir}"
+
+exec ${command} ${command_args}

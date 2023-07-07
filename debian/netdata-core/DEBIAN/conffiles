@@ -1,0 +1,4 @@
+/etc/logrotate.d/netdata
+/etc/netdata/.opt-out-from-anonymous-statistics
+/etc/netdata/edit-config
+/etc/netdata/netdata.conf

@@ -1,0 +1,19 @@
+Package: netdata-web
+Source: netdata
+Version: 1.40.1-1
+Architecture: all
+Maintainer: Cruise.zrz <Cruise.zrz@gmail.com>
+Installed-Size: 27233
+Depends: fonts-font-awesome, libjs-bootstrap, netdata-core (>= 1.40.1-1) | netdata-core-no-sse (>= 1.40.1-1)
+Enhances: netdata-core, netdata-core-no-sse
+Conflicts: netdata-data
+Replaces: netdata-data
+Section: net
+Priority: optional
+Homepage: https://github.com/deepin-community/netdata
+Description: real-time performance monitoring (web)
+ Netdata is distributed, real-time, performance and health monitoring for
+ systems and applications. It provides insights of everything happening on the
+ systems it runs using interactive web dashboards.
+ .
+ This package contains the web frontend.

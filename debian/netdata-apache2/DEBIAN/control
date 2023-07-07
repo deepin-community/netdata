@@ -1,0 +1,21 @@
+Package: netdata-apache2
+Source: netdata
+Version: 1.40.1-1
+Architecture: all
+Maintainer: Cruise.zrz <Cruise.zrz@gmail.com>
+Installed-Size: 32
+Depends: apache2, netdata-core (>= 1.40.1-1) | netdata-core-no-sse (>= 1.40.1-1), netdata-web (>= 1.40.1-1)
+Enhances: netdata-core, netdata-core-no-sse
+Section: net
+Priority: optional
+Homepage: https://github.com/deepin-community/netdata
+Description: real-time performance monitoring (apache integration)
+ Netdata is distributed, real-time, performance and health monitoring for
+ systems and applications. It provides insights of everything happening on the
+ systems it runs using interactive web dashboards.
+ .
+ Netdata includes its own embedded webserver, by default listening on localhost
+ only. To make netdata available to other users, a dedicated webserver such as
+ apache should be used (with authentication and encryption).
+ .
+ This package contains the integration for the apache HTTP server.

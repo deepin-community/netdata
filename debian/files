@@ -1,0 +1,8 @@
+netdata-apache2_1.40.1-1_all.deb net optional
+netdata-core-dbgsym_1.40.1-1_amd64.deb debug optional automatic=yes
+netdata-core_1.40.1-1_amd64.deb net optional
+netdata-plugins-bash_1.40.1-1_all.deb net optional
+netdata-plugins-python_1.40.1-1_all.deb net optional
+netdata-web_1.40.1-1_all.deb net optional
+netdata_1.40.1-1_all.deb net optional
+netdata_1.40.1-1_amd64.buildinfo net optional

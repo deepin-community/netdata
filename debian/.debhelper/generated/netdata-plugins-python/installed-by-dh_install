@@ -1,0 +1,8 @@
+debian/tmp/etc/netdata/python.d
+debian/tmp/usr/lib/netdata/conf.d/python.d
+debian/tmp/usr/lib/netdata/conf.d/python.d.conf
+debian/tmp/usr/lib/netdata/python.d
+debian/tmp/etc/netdata/python.d
+debian/tmp/usr/lib/netdata/conf.d/python.d
+debian/tmp/usr/lib/netdata/conf.d/python.d.conf
+debian/tmp/usr/lib/netdata/python.d

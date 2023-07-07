@@ -1,0 +1,22 @@
+Package: netdata
+Version: 1.40.1-1
+Architecture: all
+Maintainer: Cruise.zrz <Cruise.zrz@gmail.com>
+Installed-Size: 26
+Depends: netdata-core | netdata-core-no-sse, netdata-plugins-bash, netdata-web
+Recommends: netdata-plugins-python
+Breaks: netdata-plugins-nodejs
+Replaces: netdata-plugins-nodejs
+Section: net
+Priority: optional
+Homepage: https://github.com/deepin-community/netdata
+Description: real-time performance monitoring (metapackage)
+ Netdata is distributed, real-time, performance and health monitoring for
+ systems and applications. It provides insights of everything happening on the
+ systems it runs using interactive web dashboards.
+ .
+ It can run autonomously without any third party components or it can be
+ integrated to existing monitoring tool chains (Prometheus, Graphite,
+ OpenTSDB, Kafka, Grafana, etc).
+ .
+ This package is a metapackage depending on the typical netdata components.

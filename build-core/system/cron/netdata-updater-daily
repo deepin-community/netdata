@@ -1,0 +1,1 @@
+2 57 * * * root /usr/lib/netdata/netdata-updater.sh
