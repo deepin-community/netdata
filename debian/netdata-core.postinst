@@ -17,7 +17,7 @@ case "${1}" in
 			mkdir -p /var/lib/netdata
 		fi
 
-		# in some plugins netdata must be able to read logfiles
+		# some netdata plugins must be able to read logfiles
 		usermod -G adm netdata
 
 		# creating directory overrides

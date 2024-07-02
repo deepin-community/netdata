@@ -54,6 +54,8 @@ else
   AC_CHECK_TOOL([AR], [ar])
 fi
 
+CFLAGS="$CFLAGS -fexceptions"
+
 # -----------------------------------------------------------------------------
 # configurable options
 
@@ -68,6 +70,24 @@ AC_ARG_ENABLE(
     [AS_HELP_STRING([--enable-plugin-freeipmi], [enable freeipmi plugin @<:@default autodetect@:>@])],
     ,
     [enable_plugin_freeipmi="detect"]
+)
+AC_ARG_ENABLE(
+    [plugin-systemd-journal],
+    [AS_HELP_STRING([--enable-plugin-systemd-journal], [enable systemd-journal plugin @<:@default autodetect@:>@])],
+    ,
+    [enable_plugin_systemd_journal="detect"]
+)
+AC_ARG_ENABLE(
+    [logsmanagement],
+    [AS_HELP_STRING([--disable-logsmanagement], [Disable logsmanagement @<:@default autodetect@:>@])],
+    ,
+    [enable_logsmanagement="detect"]
+)
+AC_ARG_ENABLE(
+    [logsmanagement_tests],
+    [AS_HELP_STRING([--enable-logsmanagement-tests], [Enable logsmanagement tests @<:@default disabled@:>@])],
+    ,
+    [enable_logsmanagement_tests="no"]
 )
 AC_ARG_ENABLE(
     [plugin-cups],
@@ -154,16 +174,16 @@ AC_ARG_ENABLE(
     [enable_lto="no"]
 )
 AC_ARG_ENABLE(
-    [https],
-    [AS_HELP_STRING([--enable-https], [Enable SSL support @<:@default autodetect@:>@])],
+    [openssl],
+    [AS_HELP_STRING([--enable-openssl], [Enable OpenSSL support @<:@default autodetect@:>@])],
     ,
-    [enable_https="detect"]
+    [enable_openssl="detect"]
 )
 AC_ARG_ENABLE(
-    [compression],
-    [AS_HELP_STRING([--enable-compression], [Enable LZ4 compression support @<:@default autodetect@:>@])],
+    [lz4],
+    [AS_HELP_STRING([--enable-lz4], [Enable LZ4 support @<:@default autodetect@:>@])],
     ,
-    [enable_compression="detect"]
+    [enable_lz4="detect"]
 )
 AC_ARG_ENABLE(
     [dbengine],
@@ -202,16 +222,22 @@ AC_ARG_ENABLE(
     [enable_ml="detect"]
 )
 AC_ARG_ENABLE(
+    [gtests],
+    [AS_HELP_STRING([--enable-gtests], [Enable google tests @<:@default no@:>@])],
+    ,
+    [enable_gtests="no"]
+)
+AC_ARG_ENABLE(
     [aclk_ssl_debug],
     [AS_HELP_STRING([--enable-aclk-ssl-debug], [Enables possibility for SSL key logging @<:@default no@:>@])],
     [aclk_ssl_debug="yes"],
     [aclk_ssl_debug="no"]
 )
 AC_ARG_ENABLE(
-    [httpd],
-    [AS_HELP_STRING([--disable-httpd], [Disable webserver (h2o based) @<:@default autodetect@:>@])],
+    [h2o],
+    [AS_HELP_STRING([--disable-h2o], [Disable H2O webserver @<:@default autodetect@:>@])],
     ,
-    [enable_httpd="detect"]
+    [enable_h2o="detect"]
 )
 
 # -----------------------------------------------------------------------------
@@ -373,9 +399,102 @@ darwin*)
 esac
 
 AM_CONDITIONAL([FREEBSD], [test "${build_target}" = "freebsd"])
+if test "${build_target}" = "freebsd"
+then
+    AC_DEFINE([COMPILED_FOR_FREEBSD], [1], [Compiled for FreeBSD])
+fi
+
 AM_CONDITIONAL([MACOS], [test "${build_target}" = "macos"])
+if test "${build_target}" = "macos"
+then
+    AC_DEFINE([COMPILED_FOR_MACOS], [1], [Compiled for MacOS])
+fi
+
 AM_CONDITIONAL([LINUX], [test "${build_target}" = "linux"])
+if test "${build_target}" = "linux"
+then
+    AC_DEFINE([COMPILED_FOR_LINUX], [1], [Compiled for Linux])
+fi
+
+AM_CONDITIONAL([ENABLE_PLUGIN_LOCAL_LISTENERS], [test "${build_target}" = "linux"])
+
 AC_MSG_RESULT([Host OS: ${build_target}])
+
+# -----------------------------------------------------------------------------
+# hardening
+
+HARDENING_CFLAGS=""
+
+if ! echo "${originalCFLAGS}" | grep -q '\-fstack-protector'; then
+    AX_CHECK_COMPILE_FLAG(
+        [-fstack-protector-strong],
+        [HARDENING_CFLAGS="${HARDENING_CFLAGS} -fstack-protector-strong"],
+        [AX_CHECK_COMPILE_FLAG(
+            [-fstack-protector],
+            [HARDENING_CFLAGS="${HARDENING_CFLAGS} -fstack-protector"],
+            ,
+            [-Werror],
+        )],
+        [-Werror],
+    )
+fi
+
+if ! echo "${originalCFLAGS}" | grep -q '\-fno-stack-clash-protection'; then
+    AX_CHECK_COMPILE_FLAG(
+        [-fstack-clash-protection],
+        [HARDENING_CFLAGS="${HARDENING_CFLAGS} -fstack-clash-protection"],
+        ,
+        [-Werror],
+    )
+fi
+
+if ! echo "${originalCFLAGS}" | grep -q '\-fcf-protection'; then
+    AX_CHECK_COMPILE_FLAG(
+        [-fcf-protection=full],
+        [HARDENING_CFLAGS="${HARDENING_CFLAGS} -fcf-protection=full"],
+        ,
+        [-Werror],
+    )
+fi
+
+if ! echo "${originalCFLAGS}" | grep -q '\-mbranch-protection'; then
+    AX_CHECK_COMPILE_FLAG(
+        [-mbranch-protection=standard],
+        [HARDENING_CFLAGS="${HARDENING_CFLAGS} -mbranch-protection=standard"],
+        ,
+        [-Werror],
+    )
+fi
+
+if ! echo "${originalCFLAGS}" | grep -q '\-D_FORTIFY_SOURCE'; then
+    # This complex set of checks is needed because there is no clean
+    # way to verify _FORTIFY_SOURCE support without having to check for
+    # the required compiler builtins.
+    AC_CHECK_DECLS(
+        [__builtin_constant_p, __builtin_object_size, __builtin___memcpy_chk, __builtin___memmove_chk, __builtin___mempcpy_chk,
+         __builtin___memset_chk, __builtin___snprintf_chk, __builtin___sprintf_chk, __builtin___stpcpy_chk, __builtin___strcat_chk,
+         __builtin___strcpy_chk, __builtin___strncat_chk, __builtin___strncpy_chk, __builtin___vsnprintf_chk, __builtin___vsprintf_chk],
+        [HAVE_FORTIFY_SOURCE=2]
+    )
+
+    if test "x${HAVE_FORTIFY_SOURCE}" = "x2" && echo "${originalCFLAGS}" | grep -qv '\-O0'; then
+        AC_CHECK_DECL(
+            __builtin_dynamic_object_size,
+            [AX_CHECK_COMPILE_FLAG(
+                [-D_FORTIFY_SOURCE=3],
+                [HARDENING_CFLAGS="${HARDENING_CFLAGS} -D_FORTIFY_SOURCE=3"],
+                ,
+                [-Werror],
+            )],
+            [AX_CHECK_COMPILE_FLAG(
+                [-D_FORTIFY_SOURCE=2],
+                [HARDENING_CFLAGS="${HARDENING_CFLAGS} -D_FORTIFY_SOURCE=2"],
+                ,
+                [-Werror],
+            )],
+        )
+    fi
+fi
 
 # -----------------------------------------------------------------------------
 # backtrace
@@ -452,19 +571,94 @@ OPTIONAL_UV_LIBS="${UV_LIBS}"
 
 
 # -----------------------------------------------------------------------------
-# lz4 Extremely Fast Compression algorithm
+# lz4
 
 AC_CHECK_LIB(
     [lz4],
-    [LZ4_initStream],
+    [LZ4_createStream],
     [LZ4_LIBS_FAST="-llz4"]
 )
 
 AC_CHECK_LIB(
     [lz4],
-    [LZ4_compress_default],
+    [LZ4_compress_fast_continue],
     [LZ4_LIBS="-llz4"]
 )
+
+# -----------------------------------------------------------------------------
+# libcurl
+
+PKG_CHECK_MODULES(
+    [LIBCURL],
+    [libcurl],
+    [AC_CHECK_LIB(
+        [curl],
+        [curl_easy_init],
+        [have_libcurl=yes],
+        [have_libcurl=no]
+    )],
+    [have_libcurl=no]
+)
+
+if test "x$have_libcurl" = "xyes"; then
+    AC_DEFINE([HAVE_CURL], [1], [libcurl usability])
+    OPTIONAL_CURL_LIBS="-lcurl"
+fi
+
+# -----------------------------------------------------------------------------
+# PCRE2
+
+PKG_CHECK_MODULES(
+    [LIBPCRE2],
+    [libpcre2-8],
+    [AC_CHECK_LIB(
+        [pcre2-8],
+        [pcre2_compile_8],
+        [have_libpcre2=yes],
+        [have_libpcre2=no]
+    )],
+    [have_libpcre2=no]
+)
+
+if test "x$have_libpcre2" = "xyes"; then
+    AC_DEFINE([HAVE_PCRE2], [1], [PCRE2 usability])
+    OPTIONAL_PCRE2_LIBS="-lpcre2-8"
+fi
+
+AM_CONDITIONAL([ENABLE_LOG2JOURNAL], [test "${have_libpcre2}" = "yes"])
+
+# -----------------------------------------------------------------------------
+# zstd
+
+AC_CHECK_LIB([zstd], [ZSTD_createCStream, ZSTD_createDStream],
+             [LIBZSTD_FOUND=yes],
+             [LIBZSTD_FOUND=no])
+
+if test "x$LIBZSTD_FOUND" = "xyes"; then
+    AC_DEFINE([ENABLE_ZSTD], [1], [libzstd usability])
+    OPTIONAL_ZSTD_LIBS="-lzstd"
+fi
+
+# -----------------------------------------------------------------------------
+# brotli
+
+AC_CHECK_LIB([brotlienc], [BrotliEncoderCreateInstance, BrotliEncoderCompressStream],
+             [LIBBROTLIENC_FOUND=yes],
+             [LIBBROTLIENC_FOUND=no])
+
+if test "x$LIBBROTLIENC_FOUND" = "xyes"; then
+    AC_DEFINE([ENABLE_BROTLIENC], [1], [libbrotlienc usability])
+    OPTIONAL_BROTLIENC_LIBS="-lbrotlienc"
+fi
+
+AC_CHECK_LIB([brotlidec], [BrotliDecoderCreateInstance, BrotliDecoderDecompressStream],
+             [LIBBROTLIDEC_FOUND=yes],
+             [LIBBROTLIDEC_FOUND=no])
+
+if test "x$LIBBROTLIDEC_FOUND" = "xyes"; then
+    AC_DEFINE([ENABLE_BROTLIDEC], [1], [libbrotlidec usability])
+    OPTIONAL_BROTLIDEC_LIBS="-lbrotlidec"
+fi
 
 # -----------------------------------------------------------------------------
 # zlib
@@ -541,7 +735,8 @@ AC_CHECK_LIB(
 OPTIONAL_YAML_LIBS="${YAML_LIBS}"
 
 # -----------------------------------------------------------------------------
-# DB engine and HTTPS
+# DB engine and OpenSSL
+
 test "${enable_dbengine}" = "yes" -a -z "${LZ4_LIBS}" && \
     AC_MSG_ERROR([liblz4 required but not found. Try installing 'liblz4-dev' or 'lz4-devel'.])
 
@@ -550,10 +745,10 @@ AC_C_BIGENDIAN([],
     [AC_MSG_ERROR([Could not find out system endiannnes])])
 
 AC_CHECK_SIZEOF(void *)
-if test "$ac_cv_sizeof_void_p" = 8; then 
+if test "$ac_cv_sizeof_void_p" = 8; then
     AC_MSG_RESULT(Detected 64-bit Build Environment)
     	LIBJUDY_CFLAGS="$LIBJUDY_CFLAGS -DJU_64BIT"
-else 
+else
     AC_MSG_RESULT(Detected 32-bit Build Environment)
         LIBJUDY_CFLAGS="$LIBJUDY_CFLAGS -UJU_64BIT"
 fi
@@ -562,8 +757,8 @@ AC_SUBST([LIBJUDY_CFLAGS])
 
 JUDY_CFLAGS="-I \$(abs_top_srcdir)/libnetdata/libjudy/src"
 
-test "${enable_https}" = "yes" -a -z "${SSL_LIBS}" && \
-    AC_MSG_ERROR([OpenSSL required for HTTPS but not found. Try installing 'libssl-dev' or 'openssl-devel'.])
+test "${enable_openssl}" = "yes" -a -z "${SSL_LIBS}" && \
+    AC_MSG_ERROR([OpenSSL required but not found. Try installing 'libssl-dev' or 'openssl-devel'.])
 
 test "${enable_dbengine}" = "yes" -a -z "${SSL_LIBS}" && \
     AC_MSG_ERROR([OpenSSL required for DBENGINE but not found. Try installing 'libssl-dev' or 'openssl-devel'.])
@@ -582,48 +777,48 @@ fi
 AC_MSG_RESULT([${enable_dbengine}])
 AM_CONDITIONAL([ENABLE_DBENGINE], [test "${enable_dbengine}" = "yes"])
 
-AC_MSG_CHECKING([if netdata https should be used])
-if test "${enable_https}" != "no" -a "${SSL_LIBS}"; then
-    enable_https="yes"
-    AC_DEFINE([ENABLE_HTTPS], [1], [netdata HTTPS usability])
+AC_MSG_CHECKING([if openssl should be used])
+if test "${enable_openssl}" != "no" -a "${SSL_LIBS}"; then
+    enable_openssl="yes"
+    AC_DEFINE([ENABLE_OPENSSL], [1], [openssl usability])
     OPTIONAL_SSL_CFLAGS="${SSL_CFLAGS}"
     OPTIONAL_SSL_LIBS="${SSL_LIBS}"
 else
-    enable_https="no"
+    enable_openssl="no"
 fi
-AC_MSG_RESULT([${enable_https}])
-AM_CONDITIONAL([ENABLE_HTTPS], [test "${enable_https}" = "yes"])
+AC_MSG_RESULT([${enable_openssl}])
+AM_CONDITIONAL([ENABLE_OPENSSL], [test "${enable_openssl}" = "yes"])
 
-AC_MSG_CHECKING([if netdata compression should be used])
-if test "${enable_compression}" != "no"; then
+AC_MSG_CHECKING([if lz4 should be used])
+if test "${enable_lz4}" != "no"; then
     if test "${LZ4_LIBS_FAST}"; then
         LIBS_BKP="${LIBS}"
         LIBS="${LZ4_LIBS_FAST}"
         AC_TRY_LINK(
             [ #include <lz4.h> ],
             [
-                LZ4_stream_t* stream = LZ4_initStream(NULL, 0);
+                LZ4_stream_t* stream = LZ4_createStream();
             ],
-            [ enable_compression="yes"],
-            [ enable_compression="no" ]
+            [ enable_lz4="yes"],
+            [ enable_lz4="no" ]
         )
         LIBS="${LIBS_BKP}"
-        if test "${enable_compression}" == "yes"; then
+        if test "${enable_lz4}" == "yes"; then
             OPTIONAL_LZ4_LIBS="${LZ4_LIBS_FAST}"
-            AC_DEFINE([ENABLE_COMPRESSION], [1], [netdata compression usability])
+            AC_DEFINE([ENABLE_LZ4], [1], [lz4 usability])
         fi
     else
-        if test "${enable_compression}" == "yes"; then
-            AC_MSG_ERROR([liblz4 with version >= 1.9.0 required to enable_compression. Try installing the required version of 'liblz4-dev' or 'liblz4-devel'.])
-            enable_compression="no"
+        if test "${enable_lz4}" == "yes"; then
+            AC_MSG_ERROR([liblz4 with version >= 1.9.0 required to enable lz4. Try installing the required version of 'liblz4-dev' or 'liblz4-devel'.])
+            enable_lz4="no"
         fi
-        enable_compression="no"
+        enable_lz4="no"
     fi
 else
-    enable_compression="no"
+    enable_lz4="no"
 fi
-AC_MSG_RESULT([${enable_compression}])
-AM_CONDITIONAL([ENABLE_COMPRESSION], [test "${enable_compression}" = "yes"])
+AC_MSG_RESULT([${enable_lz4}])
+AM_CONDITIONAL([ENABLE_LZ4], [test "${enable_lz4}" = "yes"])
 
 # -----------------------------------------------------------------------------
 # JSON-C
@@ -668,6 +863,26 @@ else
 fi
 AC_MSG_RESULT([${enable_jsonc}])
 AM_CONDITIONAL([ENABLE_JSONC], [test "${enable_jsonc}" = "yes"])
+
+# -----------------------------------------------------------------------------
+# libyaml
+
+PKG_CHECK_MODULES(
+    [LIBYAML],
+    [yaml-0.1],
+    [AC_CHECK_LIB(
+        [yaml],
+        [yaml_parser_initialize],
+        [have_libyaml=yes],
+        [have_libyaml=no]
+    )],
+    [have_libyaml=no]
+)
+
+if test "x$have_libyaml" = "xyes"; then
+    AC_DEFINE([HAVE_LIBYAML], [1], [libyaml usability])
+    OPTIONAL_YAML_LIBS="-lyaml"
+fi
 
 # -----------------------------------------------------------------------------
 # YAML
@@ -735,6 +950,27 @@ if test "${enable_pedantic}" = "yes"; then
     CFLAGS="${CFLAGS} -pedantic -Wall -Wextra -Wno-long-long"
 fi
 
+# -----------------------------------------------------------------------------
+# dlsym check
+
+AC_MSG_CHECKING(whether we can use dlsym)
+OLD_LIBS="${LIBS}"
+LIBS="-ldl"
+AC_LINK_IFELSE([AC_LANG_SOURCE([[
+  #include <dlfcn.h>
+  static void *(*libc_malloc)(size_t);
+  int main() {
+    libc_malloc = dlsym(RTLD_NEXT, "malloc");
+  }
+]])], CAN_USE_DLSYM=yes, CAN_USE_DLSYM=no)
+LIBS="${OLD_LIBS}"
+AC_MSG_RESULT($CAN_USE_DLSYM)
+
+if test "x$CAN_USE_DLSYM" = xyes; then
+    AC_DEFINE([HAVE_DLSYM], [1], [dlsym usability])
+    OPTIONAL_DL_LIBS="-ldl"
+fi
+AC_SUBST([OPTIONAL_DL_LIBS])
 
 # -----------------------------------------------------------------------------
 # memory allocation library
@@ -788,36 +1024,33 @@ AC_MSG_RESULT([${with_libcap}])
 AM_CONDITIONAL([ENABLE_CAPABILITY], [test "${with_libcap}" = "yes"])
 
 # -----------------------------------------------------------------------------
-# HTTPD and h2o related
+# H2O related
 
-can_build_httpd="no"
-if test "${enable_httpd}" != "no"; then
-    can_build_httpd="yes"
-    AC_MSG_CHECKING([can build HTTPD])
+can_build_h2o="no"
+if test "${enable_h2o}" != "no"; then
+    can_build_h2o="yes"
+    AC_MSG_CHECKING([can build H2O])
     if test -z "${UV_LIBS}"; then
-        can_build_httpd="no"
+        can_build_h2o="no"
     fi
     if test -n "${SSL_LIBS}"; then
         OPTIONAL_SSL_CFLAGS="${SSL_CFLAGS}"
         OPTIONAL_SSL_LIBS="${SSL_LIBS}"
     else
-        can_build_httpd="no"
+        can_build_h2o="no"
     fi
-    if test "${with_zlib}" != "yes"; then
-        can_build_httpd="no"
-    fi
-    AC_MSG_RESULT([${can_build_httpd}])
+    AC_MSG_RESULT([${can_build_h2o}])
 
-    if test "${can_build_httpd}" = "no" -a "${enable_httpd}" = "yes"; then
-        AC_MSG_ERROR([HTTPD was requested but it cannot be built])
+    if test "${can_build_h2o}" = "no" -a "${enable_h2o}" = "yes"; then
+        AC_MSG_ERROR([H2O was requested but it cannot be built])
     fi
 
-    if test "${can_build_httpd}" = "yes"; then
-        AC_DEFINE([ENABLE_HTTPD], [1], [HTTPD (h2o based web server)])
-        HTTPD_CFLAGS="-I\$(abs_top_srcdir)/httpd/h2o/include -I\$(abs_top_srcdir)/httpd/h2o/deps/picotls/include -I\$(abs_top_srcdir)/httpd/h2o/deps/quicly/include -DH2O_USE_LIBUV=0"
+    if test "${can_build_h2o}" = "yes"; then
+        AC_DEFINE([ENABLE_H2O], [1], [H2O web server])
+        H2O_CFLAGS="-Wno-unused-result -Wno-misleading-indentation -Wno-format-security -Wno-format -Wno-unused-function -Wno-unused-parameter -Wno-type-limits -Wno-unused-but-set-variable -Wno-implicit-fallthrough -I\$(abs_top_srcdir)/web/server/h2o/libh2o/include -I\$(abs_top_srcdir)/web/server/h2o/libh2o/deps/picotls/include -I\$(abs_top_srcdir)/web/server/h2o/libh2o/deps/quicly/include -DH2O_USE_LIBUV=0"
     fi
 fi
-AM_CONDITIONAL([ENABLE_HTTPD], [test "${can_build_httpd}" = "yes"])
+AM_CONDITIONAL([ENABLE_H2O], [test "${can_build_h2o}" = "yes"])
 
 # -----------------------------------------------------------------------------
 # ACLK
@@ -963,7 +1196,6 @@ fi
 AC_MSG_RESULT([${enable_plugin_apps}])
 AM_CONDITIONAL([ENABLE_PLUGIN_APPS], [test "${enable_plugin_apps}" = "yes"])
 
-
 # -----------------------------------------------------------------------------
 # freeipmi.plugin - libipmimonitoring
 
@@ -1011,6 +1243,75 @@ fi
 AC_MSG_RESULT([${enable_plugin_freeipmi}])
 AM_CONDITIONAL([ENABLE_PLUGIN_FREEIPMI], [test "${enable_plugin_freeipmi}" = "yes"])
 
+
+# -----------------------------------------------------------------------------
+# systemd-journal.plugin - systemd
+
+LIBS_BAK="${LIBS}"
+
+AC_CHECK_LIB([systemd], [sd_journal_open], [have_systemd_libs=yes], [have_systemd_libs=no])
+AC_CHECK_HEADERS([systemd/sd-journal.h], [have_systemd_journal_header=yes], [have_systemd_journal_header=no])
+
+if test "${have_systemd_libs}" = "yes" -a "${have_systemd_journal_header}" = "yes"; then
+    have_systemd="yes"
+else
+    have_systemd="no"
+fi
+
+test "${enable_plugin_systemd_journal}" = "yes" -a "${have_systemd}" != "yes" && \
+    AC_MSG_ERROR([systemd is required but not found. Try installing 'libsystemd-dev' or 'libsystemd-devel'])
+
+AC_MSG_CHECKING([if systemd-journal.plugin should be enabled])
+if test "${enable_plugin_systemd_journal}" != "no" -a "${have_systemd}" = "yes"; then
+    enable_plugin_systemd_journal="yes"
+    AC_DEFINE([HAVE_SYSTEMD], [1], [systemd usability])
+    OPTIONAL_SYSTEMD_CFLAGS="-I/usr/include"
+    OPTIONAL_SYSTEMD_LIBS="-lsystemd"
+else
+    enable_plugin_systemd_journal="no"
+fi
+AC_MSG_RESULT([${enable_plugin_systemd_journal}])
+AM_CONDITIONAL([ENABLE_PLUGIN_SYSTEMD_JOURNAL], [test "${enable_plugin_systemd_journal}" = "yes"])
+
+AC_CHECK_LIB([systemd], [sd_journal_open_files_fd], [have_sd_journal_open_files_fd=yes], [have_sd_journal_open_files_fd=no])
+if test "${have_sd_journal_open_files_fd}" = "yes"; then
+    AC_DEFINE([HAVE_SD_JOURNAL_OPEN_FILES_FD], [1], [sd_journal_open_files_fd usability])
+fi
+
+AC_CHECK_LIB([systemd], [sd_journal_restart_fields], [have_sd_journal_restart_fields=yes], [have_sd_journal_restart_fields=no])
+if test "${have_sd_journal_restart_fields}" = "yes"; then
+    AC_DEFINE([HAVE_SD_JOURNAL_RESTART_FIELDS], [1], [sd_journal_restart_fields usability])
+fi
+
+AC_CHECK_LIB([systemd], [sd_journal_get_seqnum], [have_sd_journal_get_seqnum=yes], [have_sd_journal_get_seqnum=no])
+if test "${have_sd_journal_get_seqnum}" = "yes"; then
+    AC_DEFINE([HAVE_SD_JOURNAL_GET_SEQNUM], [1], [sd_journal_get_seqnum usability])
+fi
+
+AC_CHECK_LIB([systemd], [sd_bus_default_system, sd_bus_call_method, sd_bus_message_enter_container, sd_bus_message_read, sd_bus_message_exit_container],
+             [SYSTEMD_DBUS_FOUND=yes],
+             [SYSTEMD_DBUS_FOUND=no])
+
+if test "x$SYSTEMD_DBUS_FOUND" = "xyes"; then
+    AC_DEFINE([ENABLE_SYSTEMD_DBUS], [1], [libsystemd dbus usability])
+fi
+
+AC_MSG_NOTICE([OPTIONAL_SYSTEMD_LIBS is set to: ${OPTIONAL_SYSTEMD_LIBS}])
+
+if test "${enable_plugin_systemd_journal}" = "yes"; then
+    AC_MSG_CHECKING([for SD_JOURNAL_OS_ROOT in systemd])
+    AC_COMPILE_IFELSE(
+        [AC_LANG_PROGRAM(
+            [[#include <systemd/sd-journal.h>]],
+            [[int x = SD_JOURNAL_OS_ROOT;]]
+        )],
+        [AC_DEFINE(HAVE_SD_JOURNAL_OS_ROOT, 1, [Define if SD_JOURNAL_OS_ROOT is available])
+            AC_MSG_RESULT(yes)],
+            [AC_MSG_RESULT(no)]
+    )
+fi
+
+LIBS="${LIBS_BAK}"
 
 # -----------------------------------------------------------------------------
 # cups.plugin - libcups
@@ -1088,7 +1389,6 @@ PKG_CHECK_MODULES(
     )],
     [have_libmnl=no]
 )
-
 
 LIBS="${LIBS}"
 
@@ -1239,17 +1539,17 @@ AM_CONDITIONAL([ENABLE_PLUGIN_PERF], [test "${enable_plugin_perf}" = "yes"])
 # -----------------------------------------------------------------------------
 # gtest/gmock
 
-AC_MSG_CHECKING([if gtest and gmock can be found])
+if test "${enable_gtests}" = "yes"; then
+    AC_MSG_CHECKING([if gtest can be found])
 
-PKG_CHECK_MODULES([GTEST], [gtest], [have_gtest=yes], [have_gtest=no])
-PKG_CHECK_MODULES([GMOCK], [gmock], [have_gmock=yes], [have_gmock=no])
+    PKG_CHECK_MODULES([GTEST], [gtest], [have_gtest=yes], [have_gtest=no])
 
-if test "${have_gtest}" = "yes" -a "${have_gmock}" = "yes"; then
-    OPTIONAL_GTEST_CFLAGS="${GTEST_CFLAGS} ${GMOCK_CFLAGS}"
-    OPTIONAL_GTEST_LIBS="${GTEST_LIBS} ${GMOCK_LIBS}"
-    have_gtest="yes"
-else
-    have_gtest="no"
+    if test "${have_gtest}" = "yes"; then
+        OPTIONAL_GTEST_CFLAGS="${GTEST_CFLAGS}"
+        OPTIONAL_GTEST_LIBS="${GTEST_LIBS}"
+
+        AC_DEFINE([HAVE_GTEST], [1], [gtest availability])
+    fi
 fi
 
 # -----------------------------------------------------------------------------
@@ -1265,6 +1565,7 @@ AC_MSG_CHECKING([if git submodules are present for machine learning functionalit
 if test -f "ml/dlib/dlib/all/source.cpp"; then
     AC_MSG_RESULT([yes])
     have_ml_submodules="yes"
+    AC_DEFINE([HAVE_DLIB], [1], [dlib availability])
 else
     AC_MSG_RESULT([no])
     have_ml_submodules="no"
@@ -1292,6 +1593,56 @@ if test "${build_ml}" = "yes"; then
     OPTIONAL_ML_LIBS=""
 fi
 
+
+# -----------------------------------------------------------------------------
+# logsmanagement
+
+LIBS_BAK="${LIBS}"
+
+# Check if submodules have not been fetched. Fail if Logs Management was explicitly requested.
+
+AC_MSG_CHECKING([if git submodules are present for logs management functionality])
+if test -f "fluent-bit/CMakeLists.txt"; then
+    AC_MSG_RESULT([yes])
+    have_logsmanagement_submodules="yes"
+else
+    AC_MSG_RESULT([no])
+    have_logsmanagement_submodules="no"
+fi
+
+if test "${enable_logsmanagement}" != "no" -a "${have_logsmanagement_submodules}" = "no"; then
+    AC_MSG_WARN([Logs management cannot be built because the required git submodules are missing.])
+fi
+
+if test "${enable_logsmanagement}" != "no" -a "x$CAN_USE_DLSYM" = xno; then
+    AC_MSG_WARN([Logs management cannot be built because dlsym cannot be used.])
+fi
+
+# Decide if we should build Logs Management
+if test "${enable_logsmanagement}" != "no" -a "${have_logsmanagement_submodules}" = "yes" -a "x$CAN_USE_DLSYM" = xyes; then
+    build_logsmanagement="yes"
+else
+    build_logsmanagement="no"
+fi
+
+AM_CONDITIONAL([ENABLE_LOGSMANAGEMENT], [test "${build_logsmanagement}" = "yes"])
+if test "${build_logsmanagement}" = "yes"; then
+    AC_DEFINE([ENABLE_LOGSMANAGEMENT], [1], [enable logs management functionality])
+fi
+
+# Decide if we should build Logs Management tests.
+if test "${build_logsmanagement}" = "yes" -a "${enable_logsmanagement_tests}" = "yes"; then
+    build_logsmanagement_tests="yes"
+else
+    build_logsmanagement_tests="no"
+fi
+
+AM_CONDITIONAL([ENABLE_LOGSMANAGEMENT_TESTS], [test "${build_logsmanagement_tests}" = "yes"])
+if test "${build_logsmanagement_tests}" = "yes"; then
+    AC_DEFINE([ENABLE_LOGSMANAGEMENT_TESTS], [1], [logs management tests])
+fi
+
+LIBS="${LIBS_BAK}"
 
 # -----------------------------------------------------------------------------
 # debugfs.plugin
@@ -1388,18 +1739,6 @@ PKG_CHECK_MODULES(
         [have_libssl=no]
     )],
     [have_libssl=no]
-)
-
-PKG_CHECK_MODULES(
-    [LIBCURL],
-    [libcurl],
-    [AC_CHECK_LIB(
-        [curl],
-        [curl_easy_init],
-        [have_libcurl=yes],
-        [have_libcurl=no]
-    )],
-    [have_libcurl=no]
 )
 
 PKG_CHECK_MODULES(
@@ -1670,27 +2009,6 @@ AC_LANG_POP([C++])
 
 # -----------------------------------------------------------------------------
 
-AC_MSG_CHECKING(whether we can use dlsym)
-OLD_LIBS="${LIBS}"
-LIBS="-ldl"
-AC_LINK_IFELSE([AC_LANG_SOURCE([[
-  #include <dlfcn.h>
-  static void *(*libc_malloc)(size_t);
-  int main() {
-    libc_malloc = dlsym(RTLD_NEXT, "malloc");
-  }
-]])], CAN_USE_DLSYM=yes, CAN_USE_DLSYM=no)
-LIBS="${OLD_LIBS}"
-AC_MSG_RESULT($CAN_USE_DLSYM)
-
-if test "x$CAN_USE_DLSYM" = xyes; then
-    AC_DEFINE([HAVE_DLSYM], [1], [dlsym usability])
-    OPTIONAL_DL_LIBS="-ldl"
-fi
-AC_SUBST([OPTIONAL_DL_LIBS])
-
-# -----------------------------------------------------------------------------
-
 
 AC_DEFINE_UNQUOTED([NETDATA_USER], ["${with_user}"], [use this user to drop privileged])
 
@@ -1724,7 +2042,7 @@ CFLAGS="${originalCFLAGS} ${OPTIONAL_LTO_CFLAGS} ${OPTIONAL_PROTOBUF_CFLAGS} ${O
     ${OPTIONAL_LIBCAP_CFLAGS} ${OPTIONAL_IPMIMONITORING_CFLAGS} ${OPTIONAL_CUPS_CFLAGS} ${OPTIONAL_XENSTAT_FLAGS} \
     ${OPTIONAL_KINESIS_CFLAGS} ${OPTIONAL_PUBSUB_CFLAGS} ${OPTIONAL_PROMETHEUS_REMOTE_WRITE_CFLAGS} \
     ${OPTIONAL_MONGOC_CFLAGS} ${LWS_CFLAGS} ${OPTIONAL_JSONC_STATIC_CFLAGS} ${OPTIONAL_YAML_STATIC_CFLAGS} ${OPTIONAL_BPF_CFLAGS} ${JUDY_CFLAGS} \
-    ${OPTIONAL_ACLK_CFLAGS} ${OPTIONAL_ML_CFLAGS} ${OPTIONAL_OS_DEP_CFLAGS} ${HTTPD_CFLAGS}"
+    ${OPTIONAL_ACLK_CFLAGS} ${OPTIONAL_ML_CFLAGS} ${OPTIONAL_OS_DEP_CFLAGS} ${H2O_CFLAGS} ${HARDENING_CFLAGS}"
 
 CXXFLAGS="${CFLAGS} ${OPTIONAL_KINESIS_CXXFLAGS} ${CPP_STD_FLAG}"
 
@@ -1744,6 +2062,12 @@ AC_SUBST([OPTIONAL_MATH_LIBS])
 AC_SUBST([OPTIONAL_DATACHANNEL_LIBS])
 AC_SUBST([OPTIONAL_UV_LIBS])
 AC_SUBST([OPTIONAL_LZ4_LIBS])
+AC_SUBST([OPTIONAL_BROTLIENC_LIBS])
+AC_SUBST([OPTIONAL_BROTLIDEC_LIBS])
+AC_SUBST([OPTIONAL_YAML_LIBS])
+AC_SUBST([OPTIONAL_CURL_LIBS])
+AC_SUBST([OPTIONAL_PCRE2_LIBS])
+AC_SUBST([OPTIONAL_ZSTD_LIBS])
 AC_SUBST([OPTIONAL_SSL_LIBS])
 AC_SUBST([OPTIONAL_JSONC_LIBS])
 AC_SUBST([OPTIONAL_YAML_LIBS])
@@ -1780,6 +2104,7 @@ AC_SUBST([OPTIONAL_GTEST_CFLAGS])
 AC_SUBST([OPTIONAL_GTEST_LIBS])
 AC_SUBST([OPTIONAL_ML_CFLAGS])
 AC_SUBST([OPTIONAL_ML_LIBS])
+AC_SUBST(OPTIONAL_SYSTEMD_LIBS)
 
 # -----------------------------------------------------------------------------
 # Check if cmocka is available - needed for unit testing
@@ -1810,6 +2135,7 @@ AC_SUBST([TEST_LIBS])
 
 # -----------------------------------------------------------------------------
 # save configure options for build info
+
 AC_DEFINE_UNQUOTED(
     [CONFIGURE_COMMAND],
     ["$ac_configure_args"],
@@ -1830,6 +2156,7 @@ AC_CONFIG_FILES([
     collectors/freebsd.plugin/Makefile
     collectors/freeipmi.plugin/Makefile
     collectors/cups.plugin/Makefile
+    collectors/log2journal/Makefile
     collectors/idlejitter.plugin/Makefile
     collectors/macos.plugin/Makefile
     collectors/nfacct.plugin/Makefile
@@ -1842,6 +2169,7 @@ AC_CONFIG_FILES([
     collectors/tc.plugin/Makefile
     collectors/xenstat.plugin/Makefile
     collectors/perf.plugin/Makefile
+    collectors/systemd-journal.plugin/Makefile
     daemon/Makefile
     database/Makefile
     database/contexts/Makefile
@@ -1867,17 +2195,21 @@ AC_CONFIG_FILES([
     libnetdata/aral/Makefile
     libnetdata/avl/Makefile
     libnetdata/buffer/Makefile
+    libnetdata/buffered_reader/Makefile
     libnetdata/clocks/Makefile
     libnetdata/completion/Makefile
     libnetdata/config/Makefile
+    libnetdata/datetime/Makefile
     libnetdata/dictionary/Makefile
     libnetdata/ebpf/Makefile
     libnetdata/eval/Makefile
+    libnetdata/facets/Makefile
+    libnetdata/functions_evloop/Makefile
     libnetdata/july/Makefile
+    libnetdata/line_splitter/Makefile
     libnetdata/locks/Makefile
     libnetdata/log/Makefile
     libnetdata/onewayalloc/Makefile
-    libnetdata/parser/Makefile
     libnetdata/popen/Makefile
     libnetdata/procfile/Makefile
     libnetdata/simple_pattern/Makefile
@@ -1888,6 +2220,7 @@ AC_CONFIG_FILES([
     libnetdata/storage_number/tests/Makefile
     libnetdata/threads/Makefile
     libnetdata/url/Makefile
+    libnetdata/uuid/Makefile
     libnetdata/json/Makefile
     libnetdata/health/Makefile
     libnetdata/worker_utilization/Makefile
@@ -1898,6 +2231,7 @@ AC_CONFIG_FILES([
     web/Makefile
     web/api/Makefile
     web/api/badges/Makefile
+    web/api/ilove/Makefile
     web/api/exporters/Makefile
     web/api/exporters/shell/Makefile
     web/api/exporters/prometheus/Makefile
@@ -1921,12 +2255,14 @@ AC_CONFIG_FILES([
     web/api/queries/trimmed_mean/Makefile
     web/api/health/Makefile
     web/gui/Makefile
-    web/gui/dashboard/Makefile
+    web/gui/v1/Makefile
+    web/gui/v2/Makefile
     web/rtc/Makefile
     web/server/Makefile
     web/server/static/Makefile
     claim/Makefile
     spawn/Makefile
+    logsmanagement/Makefile
 ])
 
 AC_OUTPUT

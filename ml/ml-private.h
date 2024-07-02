@@ -8,6 +8,7 @@
 
 #include <vector>
 #include <queue>
+#include <unordered_map>
 
 typedef double calculated_number_t;
 typedef dlib::matrix<calculated_number_t, 6, 1> DSample;
@@ -195,7 +196,7 @@ typedef struct {
     std::vector<calculated_number_t> cns;
 
     std::vector<ml_kmeans_t> km_contexts;
-    netdata_mutex_t mutex;
+    SPINLOCK slock;
     ml_kmeans_t kmeans;
     std::vector<DSample> feature;
 
@@ -206,14 +207,20 @@ typedef struct {
 typedef struct {
     RRDSET *rs;
     ml_machine_learning_stats_t mls;
-
-    netdata_mutex_t mutex;
 } ml_chart_t;
 
 void ml_chart_update_dimension(ml_chart_t *chart, ml_dimension_t *dim, bool is_anomalous);
 
 typedef struct {
+    RRDDIM *rd;
+    size_t normal_dimensions;
+    size_t anomalous_dimensions;
+} ml_type_anomaly_rate_t;
+
+typedef struct {
     RRDHOST *rh;
+
+    std::atomic<bool> ml_running;
 
     ml_machine_learning_stats_t mls;
 
@@ -226,6 +233,9 @@ typedef struct {
     /*
      * bookkeeping for anomaly detection charts
     */
+
+    RRDSET *ml_running_rs;
+    RRDDIM *ml_running_rd;
 
     RRDSET *machine_learning_status_rs;
     RRDDIM *machine_learning_status_enabled_rd;
@@ -252,6 +262,9 @@ typedef struct {
     RRDSET *detector_events_rs;
     RRDDIM *detector_events_above_threshold_rd;
     RRDDIM *detector_events_new_anomaly_event_rd;
+
+    RRDSET *type_anomaly_rate_rs;
+    std::unordered_map<STRING *, ml_type_anomaly_rate_t> type_anomaly_rate;
 } ml_host_t;
 
 typedef struct {
@@ -288,6 +301,9 @@ typedef struct {
     RRDDIM *training_results_not_enough_collected_values_rd;
     RRDDIM *training_results_null_acquired_dimension_rd;
     RRDDIM *training_results_chart_under_replication_rd;
+
+    size_t num_db_transactions;
+    size_t num_models_to_prune;
 } ml_training_thread_t;
 
 typedef struct {
@@ -298,6 +314,7 @@ typedef struct {
     unsigned train_every;
 
     unsigned num_models_to_use;
+    unsigned delete_models_older_than;
 
     unsigned db_engine_anomaly_rate_every;
 

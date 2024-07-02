@@ -44,6 +44,7 @@ dist_healthconfig_DATA = \
     health.d/elasticsearch.conf \
     health.d/entropy.conf \
     health.d/exporting.conf \
+    health.d/file_descriptors.conf \
     health.d/geth.conf \
     health.d/ioping.conf \
     health.d/gearman.conf \
@@ -67,7 +68,6 @@ dist_healthconfig_DATA = \
     health.d/net.conf \
     health.d/netfilter.conf \
     health.d/nvme.conf \
-    health.d/nut.conf \
     health.d/pihole.conf \
     health.d/plugin.conf \
     health.d/ping.conf \
@@ -93,6 +93,7 @@ dist_healthconfig_DATA = \
     health.d/tcp_resets.conf \
     health.d/udp_errors.conf \
     health.d/unbound.conf \
+    health.d/upsd.conf \
     health.d/vcsa.conf \
     health.d/vernemq.conf \
     health.d/vsphere.conf \

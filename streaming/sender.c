@@ -1,31 +1,37 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "rrdpush.h"
+#include "common.h"
+#include "aclk/https_client.h"
 
-#define WORKER_SENDER_JOB_CONNECT                    0
-#define WORKER_SENDER_JOB_PIPE_READ                  1
-#define WORKER_SENDER_JOB_SOCKET_RECEIVE             2
-#define WORKER_SENDER_JOB_EXECUTE                    3
-#define WORKER_SENDER_JOB_SOCKET_SEND                4
-#define WORKER_SENDER_JOB_DISCONNECT_BAD_HANDSHAKE   5
-#define WORKER_SENDER_JOB_DISCONNECT_OVERFLOW        6
-#define WORKER_SENDER_JOB_DISCONNECT_TIMEOUT         7
-#define WORKER_SENDER_JOB_DISCONNECT_POLL_ERROR      8
-#define WORKER_SENDER_JOB_DISCONNECT_SOCKER_ERROR    9
-#define WORKER_SENDER_JOB_DISCONNECT_SSL_ERROR      10
-#define WORKER_SENDER_JOB_DISCONNECT_PARENT_CLOSED  11
-#define WORKER_SENDER_JOB_DISCONNECT_RECEIVE_ERROR  12
-#define WORKER_SENDER_JOB_DISCONNECT_SEND_ERROR     13
-#define WORKER_SENDER_JOB_DISCONNECT_NO_COMPRESSION 14
-#define WORKER_SENDER_JOB_BUFFER_RATIO              15
-#define WORKER_SENDER_JOB_BYTES_RECEIVED            16
-#define WORKER_SENDER_JOB_BYTES_SENT                17
-#define WORKER_SENDER_JOB_REPLAY_REQUEST            18
-#define WORKER_SENDER_JOB_FUNCTION_REQUEST          19
-#define WORKER_SENDER_JOB_REPLAY_DICT_SIZE          20
+#define WORKER_SENDER_JOB_CONNECT                                0
+#define WORKER_SENDER_JOB_PIPE_READ                              1
+#define WORKER_SENDER_JOB_SOCKET_RECEIVE                         2
+#define WORKER_SENDER_JOB_EXECUTE                                3
+#define WORKER_SENDER_JOB_SOCKET_SEND                            4
+#define WORKER_SENDER_JOB_DISCONNECT_BAD_HANDSHAKE               5
+#define WORKER_SENDER_JOB_DISCONNECT_OVERFLOW                    6
+#define WORKER_SENDER_JOB_DISCONNECT_TIMEOUT                     7
+#define WORKER_SENDER_JOB_DISCONNECT_POLL_ERROR                  8
+#define WORKER_SENDER_JOB_DISCONNECT_SOCKET_ERROR                9
+#define WORKER_SENDER_JOB_DISCONNECT_SSL_ERROR                  10
+#define WORKER_SENDER_JOB_DISCONNECT_PARENT_CLOSED              11
+#define WORKER_SENDER_JOB_DISCONNECT_RECEIVE_ERROR              12
+#define WORKER_SENDER_JOB_DISCONNECT_SEND_ERROR                 13
+#define WORKER_SENDER_JOB_DISCONNECT_NO_COMPRESSION             14
+#define WORKER_SENDER_JOB_BUFFER_RATIO                          15
+#define WORKER_SENDER_JOB_BYTES_RECEIVED                        16
+#define WORKER_SENDER_JOB_BYTES_SENT                            17
+#define WORKER_SENDER_JOB_BYTES_COMPRESSED                      18
+#define WORKER_SENDER_JOB_BYTES_UNCOMPRESSED                    19
+#define WORKER_SENDER_JOB_BYTES_COMPRESSION_RATIO               20
+#define WORKER_SENDER_JOB_REPLAY_REQUEST                        21
+#define WORKER_SENDER_JOB_FUNCTION_REQUEST                      22
+#define WORKER_SENDER_JOB_REPLAY_DICT_SIZE                      23
+#define WORKER_SENDER_JOB_DISCONNECT_CANT_UPGRADE_CONNECTION    24
 
-#if WORKER_UTILIZATION_MAX_JOB_TYPES < 21
-#error WORKER_UTILIZATION_MAX_JOB_TYPES has to be at least 21
+#if WORKER_UTILIZATION_MAX_JOB_TYPES < 25
+#error WORKER_UTILIZATION_MAX_JOB_TYPES has to be at least 25
 #endif
 
 extern struct config stream_config;
@@ -66,21 +72,6 @@ BUFFER *sender_start(struct sender_state *s) {
 
 static inline void rrdpush_sender_thread_close_socket(RRDHOST *host);
 
-#ifdef ENABLE_COMPRESSION
-/*
-* In case of stream compression buffer overflow
-* Inform the user through the error log file and 
-* deactivate compression by downgrading the stream protocol.
-*/
-static inline void deactivate_compression(struct sender_state *s) {
-    worker_is_busy(WORKER_SENDER_JOB_DISCONNECT_NO_COMPRESSION);
-    error("STREAM_COMPRESSION: Compression returned error, disabling it.");
-    s->flags &= ~SENDER_FLAG_COMPRESSION;
-    error("STREAM %s [send to %s]: Restarting connection without compression.", rrdhost_hostname(s->host), s->connected_to);
-    rrdpush_sender_thread_close_socket(s->host);
-}
-#endif
-
 #define SENDER_BUFFER_ADAPT_TO_TIMES_MAX_SIZE 3
 
 // Collector thread finishing a transmission
@@ -100,25 +91,33 @@ void sender_commit(struct sender_state *s, BUFFER *wb, STREAM_TRAFFIC_TYPE type)
     if(unlikely(!src || !src_len))
         return;
 
-    netdata_mutex_lock(&s->mutex);
+    sender_lock(s);
 
-//    FILE *fp = fopen("/tmp/stream.txt", "a");
-//    fprintf(fp,
-//            "\n--- SEND BEGIN: %s ----\n"
-//            "%s"
-//            "--- SEND END ----------------------------------------\n"
-//            , rrdhost_hostname(s->host), src);
-//    fclose(fp);
+#ifdef NETDATA_LOG_STREAM_SENDER
+    if(type == STREAM_TRAFFIC_TYPE_METADATA) {
+        if(!s->stream_log_fp) {
+            char filename[FILENAME_MAX + 1];
+            snprintfz(filename, FILENAME_MAX, "/tmp/stream-sender-%s.txt", s->host ? rrdhost_hostname(s->host) : "unknown");
+
+            s->stream_log_fp = fopen(filename, "w");
+        }
+
+        fprintf(s->stream_log_fp, "\n--- SEND MESSAGE START: %s ----\n"
+                    "%s"
+                    "--- SEND MESSAGE END ----------------------------------------\n"
+                , rrdhost_hostname(s->host), src
+               );
+    }
+#endif
 
     if(unlikely(s->buffer->max_size < (src_len + 1) * SENDER_BUFFER_ADAPT_TO_TIMES_MAX_SIZE)) {
-        info("STREAM %s [send to %s]: max buffer size of %zu is too small for a data message of size %zu. Increasing the max buffer size to %d times the max data message size.",
+        netdata_log_info("STREAM %s [send to %s]: max buffer size of %zu is too small for a data message of size %zu. Increasing the max buffer size to %d times the max data message size.",
               rrdhost_hostname(s->host), s->connected_to, s->buffer->max_size, buffer_strlen(wb) + 1, SENDER_BUFFER_ADAPT_TO_TIMES_MAX_SIZE);
 
         s->buffer->max_size = (src_len + 1) * SENDER_BUFFER_ADAPT_TO_TIMES_MAX_SIZE;
     }
 
-#ifdef ENABLE_COMPRESSION
-    if (stream_has_capability(s, STREAM_CAP_COMPRESSION) && s->compressor) {
+    if (s->compressor.initialized) {
         while(src_len) {
             size_t size_to_compress = src_len;
 
@@ -143,28 +142,45 @@ void sender_commit(struct sender_state *s, BUFFER *wb, STREAM_TRAFFIC_TYPE type)
                 }
             }
 
-            char *dst;
-            size_t dst_len = s->compressor->compress(s->compressor, src, size_to_compress, &dst);
+            const char *dst;
+            size_t dst_len = rrdpush_compress(&s->compressor, src, size_to_compress, &dst);
             if (!dst_len) {
-                error("STREAM %s [send to %s]: COMPRESSION failed. Resetting compressor and re-trying",
+                netdata_log_error("STREAM %s [send to %s]: COMPRESSION failed. Resetting compressor and re-trying",
                       rrdhost_hostname(s->host), s->connected_to);
 
-                s->compressor->reset(s->compressor);
-                dst_len = s->compressor->compress(s->compressor, src, size_to_compress, &dst);
+                rrdpush_compression_initialize(s);
+                dst_len = rrdpush_compress(&s->compressor, src, size_to_compress, &dst);
                 if(!dst_len) {
-                    error("STREAM %s [send to %s]: COMPRESSION failed again. Deactivating compression",
+                    netdata_log_error("STREAM %s [send to %s]: COMPRESSION failed again. Deactivating compression",
                           rrdhost_hostname(s->host), s->connected_to);
 
-                    deactivate_compression(s);
-                    netdata_mutex_unlock(&s->mutex);
+                    worker_is_busy(WORKER_SENDER_JOB_DISCONNECT_NO_COMPRESSION);
+                    rrdpush_compression_deactivate(s);
+                    rrdpush_sender_thread_close_socket(s->host);
+                    sender_unlock(s);
                     return;
                 }
             }
 
-            if(cbuffer_add_unsafe(s->buffer, dst, dst_len))
+            rrdpush_signature_t signature = rrdpush_compress_encode_signature(dst_len);
+
+#ifdef NETDATA_INTERNAL_CHECKS
+            // check if reversing the signature provides the same length
+            size_t decoded_dst_len = rrdpush_decompress_decode_signature((const char *)&signature, sizeof(signature));
+            if(decoded_dst_len != dst_len)
+                fatal("RRDPUSH COMPRESSION: invalid signature, original payload %zu bytes, "
+                      "compressed payload length %zu bytes, but signature says payload is %zu bytes",
+                      size_to_compress, dst_len, decoded_dst_len);
+#endif
+
+            if(cbuffer_add_unsafe(s->buffer, (const char *)&signature, sizeof(signature)))
                 s->flags |= SENDER_FLAG_OVERFLOW;
-            else
-                s->sent_bytes_on_this_connection_per_type[type] += dst_len;
+            else {
+                if(cbuffer_add_unsafe(s->buffer, dst, dst_len))
+                    s->flags |= SENDER_FLAG_OVERFLOW;
+                else
+                    s->sent_bytes_on_this_connection_per_type[type] += dst_len + sizeof(signature);
+            }
 
             src = src + size_to_compress;
             src_len -= size_to_compress;
@@ -174,12 +190,6 @@ void sender_commit(struct sender_state *s, BUFFER *wb, STREAM_TRAFFIC_TYPE type)
         s->flags |= SENDER_FLAG_OVERFLOW;
     else
         s->sent_bytes_on_this_connection_per_type[type] += src_len;
-#else
-    if(cbuffer_add_unsafe(s->buffer, src, src_len))
-        s->flags |= SENDER_FLAG_OVERFLOW;
-    else
-        s->sent_bytes_on_this_connection_per_type[type] += src_len;
-#endif
 
     replication_recalculate_buffer_used_ratio_unsafe(s);
 
@@ -189,9 +199,9 @@ void sender_commit(struct sender_state *s, BUFFER *wb, STREAM_TRAFFIC_TYPE type)
         signal_sender = true;
     }
 
-    netdata_mutex_unlock(&s->mutex);
+    sender_unlock(s);
 
-    if(signal_sender)
+    if(signal_sender && (!stream_has_capability(s, STREAM_CAP_INTERPOLATED) || type != STREAM_TRAFFIC_TYPE_DATA))
         rrdpush_signal_sender_to_wake_up(s);
 }
 
@@ -203,7 +213,7 @@ static inline void rrdpush_sender_add_host_variable_to_buffer(BUFFER *wb, const 
             , rrdvar2number(rva)
     );
 
-    debug(D_STREAM, "RRDVAR pushed HOST VARIABLE %s = " NETDATA_DOUBLE_FORMAT, rrdvar_name(rva), rrdvar2number(rva));
+    netdata_log_debug(D_STREAM, "RRDVAR pushed HOST VARIABLE %s = " NETDATA_DOUBLE_FORMAT, rrdvar_name(rva), rrdvar2number(rva));
 }
 
 void rrdpush_sender_send_this_host_variable_now(RRDHOST *host, const RRDVAR_ACQUIRED *rva) {
@@ -242,7 +252,7 @@ static void rrdpush_sender_thread_send_custom_host_variables(RRDHOST *host) {
         sender_commit(host->sender, wb, STREAM_TRAFFIC_TYPE_METADATA);
         sender_thread_buffer_free();
 
-        debug(D_STREAM, "RRDVAR sent %d VARIABLES", ret);
+        netdata_log_debug(D_STREAM, "RRDVAR sent %d VARIABLES", ret);
     }
 }
 
@@ -251,15 +261,17 @@ static void rrdpush_sender_thread_send_custom_host_variables(RRDHOST *host) {
 static void rrdpush_sender_thread_reset_all_charts(RRDHOST *host) {
     RRDSET *st;
     rrdset_foreach_read(st, host) {
-        rrdset_flag_clear(st, RRDSET_FLAG_UPSTREAM_EXPOSED | RRDSET_FLAG_SENDER_REPLICATION_IN_PROGRESS);
+        rrdset_flag_clear(st, RRDSET_FLAG_SENDER_REPLICATION_IN_PROGRESS);
         rrdset_flag_set(st, RRDSET_FLAG_SENDER_REPLICATION_FINISHED);
 
-        st->upstream_resync_time_s = 0;
+        st->rrdpush.sender.resync_time_s = 0;
 
         RRDDIM *rd;
         rrddim_foreach_read(rd, st)
-            rd->exposed = 0;
+            rrddim_metadata_exposed_upstream_clear(rd);
         rrddim_foreach_done(rd);
+
+        rrdset_metadata_updated(st);
     }
     rrdset_foreach_done(st);
 
@@ -273,7 +285,7 @@ static void rrdpush_sender_cbuffer_recreate_timed(struct sender_state *s, time_t
         return;
 
     if(!have_mutex)
-        netdata_mutex_lock(&s->mutex);
+        sender_lock(s);
 
     rrdpush_sender_last_buffer_recreate_set(s, now_s);
     last_reset_time_s = now_s;
@@ -287,20 +299,20 @@ static void rrdpush_sender_cbuffer_recreate_timed(struct sender_state *s, time_t
     sender_thread_buffer_free();
 
     if(!have_mutex)
-        netdata_mutex_unlock(&s->mutex);
+        sender_unlock(s);
 }
 
 static void rrdpush_sender_cbuffer_flush(RRDHOST *host) {
     rrdpush_sender_set_flush_time(host->sender);
 
-    netdata_mutex_lock(&host->sender->mutex);
+    sender_lock(host->sender);
 
     // flush the output buffer from any data it may have
     cbuffer_flush(host->sender->buffer);
     rrdpush_sender_cbuffer_recreate_timed(host->sender, now_monotonic_sec(), true, true);
     replication_recalculate_buffer_used_ratio_unsafe(host->sender);
 
-    netdata_mutex_unlock(&host->sender->mutex);
+    sender_unlock(host->sender);
 }
 
 static void rrdpush_sender_charts_and_replication_reset(RRDHOST *host) {
@@ -342,8 +354,7 @@ static inline void rrdpush_sender_thread_close_socket(RRDHOST *host) {
     rrdpush_sender_charts_and_replication_reset(host);
 }
 
-void rrdpush_encode_variable(stream_encoded_t *se, RRDHOST *host)
-{
+void rrdpush_encode_variable(stream_encoded_t *se, RRDHOST *host) {
     se->os_name = (host->system_info->host_os_name)?url_encode(host->system_info->host_os_name):strdupz("");
     se->os_id = (host->system_info->host_os_id)?url_encode(host->system_info->host_os_id):strdupz("");
     se->os_version = (host->system_info->host_os_version)?url_encode(host->system_info->host_os_version):strdupz("");
@@ -351,124 +362,155 @@ void rrdpush_encode_variable(stream_encoded_t *se, RRDHOST *host)
     se->kernel_version = (host->system_info->kernel_version)?url_encode(host->system_info->kernel_version):strdupz("");
 }
 
-void rrdpush_clean_encoded(stream_encoded_t *se)
-{
-    if (se->os_name)
+void rrdpush_clean_encoded(stream_encoded_t *se) {
+    if (se->os_name) {
         freez(se->os_name);
+        se->os_name = NULL;
+    }
 
-    if (se->os_id)
+    if (se->os_id) {
         freez(se->os_id);
+        se->os_id = NULL;
+    }
 
-    if (se->os_version)
+    if (se->os_version) {
         freez(se->os_version);
+        se->os_version = NULL;
+    }
 
-    if (se->kernel_name)
+    if (se->kernel_name) {
         freez(se->kernel_name);
+        se->kernel_name = NULL;
+    }
 
-    if (se->kernel_version)
+    if (se->kernel_version) {
         freez(se->kernel_version);
+        se->kernel_version = NULL;
+    }
 }
 
 struct {
     const char *response;
+    const char *status;
     size_t length;
     int32_t version;
     bool dynamic;
     const char *error;
     int worker_job_id;
-    time_t postpone_reconnect_seconds;
+    int postpone_reconnect_seconds;
+    ND_LOG_FIELD_PRIORITY priority;
 } stream_responses[] = {
     {
         .response = START_STREAMING_PROMPT_VN,
         .length = sizeof(START_STREAMING_PROMPT_VN) - 1,
+        .status = RRDPUSH_STATUS_CONNECTED,
         .version = STREAM_HANDSHAKE_OK_V3, // and above
         .dynamic = true,                 // dynamic = we will parse the version / capabilities
         .error = NULL,
         .worker_job_id = 0,
         .postpone_reconnect_seconds = 0,
+        .priority = NDLP_INFO,
     },
     {
         .response = START_STREAMING_PROMPT_V2,
         .length = sizeof(START_STREAMING_PROMPT_V2) - 1,
+        .status = RRDPUSH_STATUS_CONNECTED,
         .version = STREAM_HANDSHAKE_OK_V2,
         .dynamic = false,
         .error = NULL,
         .worker_job_id = 0,
         .postpone_reconnect_seconds = 0,
+        .priority = NDLP_INFO,
     },
     {
         .response = START_STREAMING_PROMPT_V1,
         .length = sizeof(START_STREAMING_PROMPT_V1) - 1,
+        .status = RRDPUSH_STATUS_CONNECTED,
         .version = STREAM_HANDSHAKE_OK_V1,
         .dynamic = false,
         .error = NULL,
         .worker_job_id = 0,
         .postpone_reconnect_seconds = 0,
+        .priority = NDLP_INFO,
     },
     {
         .response = START_STREAMING_ERROR_SAME_LOCALHOST,
         .length = sizeof(START_STREAMING_ERROR_SAME_LOCALHOST) - 1,
+        .status = RRDPUSH_STATUS_LOCALHOST,
         .version = STREAM_HANDSHAKE_ERROR_LOCALHOST,
         .dynamic = false,
         .error = "remote server rejected this stream, the host we are trying to stream is its localhost",
         .worker_job_id = WORKER_SENDER_JOB_DISCONNECT_BAD_HANDSHAKE,
         .postpone_reconnect_seconds = 60 * 60, // the IP may change, try it every hour
+        .priority = NDLP_DEBUG,
     },
     {
         .response = START_STREAMING_ERROR_ALREADY_STREAMING,
         .length = sizeof(START_STREAMING_ERROR_ALREADY_STREAMING) - 1,
+        .status = RRDPUSH_STATUS_ALREADY_CONNECTED,
         .version = STREAM_HANDSHAKE_ERROR_ALREADY_CONNECTED,
         .dynamic = false,
         .error = "remote server rejected this stream, the host we are trying to stream is already streamed to it",
         .worker_job_id = WORKER_SENDER_JOB_DISCONNECT_BAD_HANDSHAKE,
         .postpone_reconnect_seconds = 2 * 60, // 2 minutes
+        .priority = NDLP_DEBUG,
     },
     {
         .response = START_STREAMING_ERROR_NOT_PERMITTED,
         .length = sizeof(START_STREAMING_ERROR_NOT_PERMITTED) - 1,
+        .status = RRDPUSH_STATUS_PERMISSION_DENIED,
         .version = STREAM_HANDSHAKE_ERROR_DENIED,
         .dynamic = false,
         .error = "remote server denied access, probably we don't have the right API key?",
         .worker_job_id = WORKER_SENDER_JOB_DISCONNECT_BAD_HANDSHAKE,
         .postpone_reconnect_seconds = 1 * 60, // 1 minute
+        .priority = NDLP_ERR,
     },
     {
         .response = START_STREAMING_ERROR_BUSY_TRY_LATER,
         .length = sizeof(START_STREAMING_ERROR_BUSY_TRY_LATER) - 1,
+        .status = RRDPUSH_STATUS_RATE_LIMIT,
         .version = STREAM_HANDSHAKE_BUSY_TRY_LATER,
         .dynamic = false,
         .error = "remote server is currently busy, we should try later",
         .worker_job_id = WORKER_SENDER_JOB_DISCONNECT_BAD_HANDSHAKE,
         .postpone_reconnect_seconds = 2 * 60, // 2 minutes
+        .priority = NDLP_NOTICE,
     },
     {
         .response = START_STREAMING_ERROR_INTERNAL_ERROR,
         .length = sizeof(START_STREAMING_ERROR_INTERNAL_ERROR) - 1,
+        .status = RRDPUSH_STATUS_INTERNAL_SERVER_ERROR,
         .version = STREAM_HANDSHAKE_INTERNAL_ERROR,
         .dynamic = false,
         .error = "remote server is encountered an internal error, we should try later",
         .worker_job_id = WORKER_SENDER_JOB_DISCONNECT_BAD_HANDSHAKE,
         .postpone_reconnect_seconds = 5 * 60, // 5 minutes
+        .priority = NDLP_CRIT,
     },
     {
         .response = START_STREAMING_ERROR_INITIALIZATION,
         .length = sizeof(START_STREAMING_ERROR_INITIALIZATION) - 1,
+        .status = RRDPUSH_STATUS_INITIALIZATION_IN_PROGRESS,
         .version = STREAM_HANDSHAKE_INITIALIZATION,
         .dynamic = false,
         .error = "remote server is initializing, we should try later",
         .worker_job_id = WORKER_SENDER_JOB_DISCONNECT_BAD_HANDSHAKE,
         .postpone_reconnect_seconds = 2 * 60, // 2 minute
+        .priority = NDLP_NOTICE,
     },
 
     // terminator
     {
         .response = NULL,
         .length = 0,
+        .status = RRDPUSH_STATUS_BAD_HANDSHAKE,
         .version = STREAM_HANDSHAKE_ERROR_BAD_HANDSHAKE,
         .dynamic = false,
         .error = "remote node response is not understood, is it Netdata?",
         .worker_job_id = WORKER_SENDER_JOB_DISCONNECT_BAD_HANDSHAKE,
         .postpone_reconnect_seconds = 1 * 60, // 1 minute
+        .priority = NDLP_ERR,
     }
 };
 
@@ -490,33 +532,49 @@ static inline bool rrdpush_sender_validate_response(RRDHOST *host, struct sender
             break;
         }
     }
-    const char *error = stream_responses[i].error;
-    int worker_job_id = stream_responses[i].worker_job_id;
-    time_t delay = stream_responses[i].postpone_reconnect_seconds;
 
     if(version >= STREAM_HANDSHAKE_OK_V1) {
-        host->destination->last_error = NULL;
-        host->destination->last_handshake = version;
-        host->destination->postpone_reconnection_until = 0;
-        s->capabilities = convert_stream_version_to_capabilities(version);
+        host->destination->reason = version;
+        host->destination->postpone_reconnection_until = now_realtime_sec() + s->reconnect_delay;
+        s->capabilities = convert_stream_version_to_capabilities(version, host, true);
         return true;
     }
 
+    ND_LOG_FIELD_PRIORITY priority = stream_responses[i].priority;
+    const char *error = stream_responses[i].error;
+    const char *status = stream_responses[i].status;
+    int worker_job_id = stream_responses[i].worker_job_id;
+    int delay = stream_responses[i].postpone_reconnect_seconds;
+
     worker_is_busy(worker_job_id);
     rrdpush_sender_thread_close_socket(host);
-    host->destination->last_error = error;
-    host->destination->last_handshake = version;
+    host->destination->reason = version;
     host->destination->postpone_reconnection_until = now_realtime_sec() + delay;
 
-    char buf[LOG_DATE_LENGTH];
-    log_date(buf, LOG_DATE_LENGTH, host->destination->postpone_reconnection_until);
-    error("STREAM %s [send to %s]: %s - will retry in %ld secs, at %s",
-          rrdhost_hostname(host), s->connected_to, error, delay, buf);
+    ND_LOG_STACK lgs[] = {
+            ND_LOG_FIELD_TXT(NDF_RESPONSE_CODE, status),
+            ND_LOG_FIELD_END(),
+    };
+    ND_LOG_STACK_PUSH(lgs);
+
+    char buf[RFC3339_MAX_LENGTH];
+    rfc3339_datetime_ut(buf, sizeof(buf), host->destination->postpone_reconnection_until * USEC_PER_SEC, 0, false);
+
+    nd_log(NDLS_DAEMON, priority,
+           "STREAM %s [send to %s]: %s - will retry in %d secs, at %s",
+           rrdhost_hostname(host), s->connected_to, error, delay, buf);
 
     return false;
 }
 
-static bool rrdpush_sender_connect_ssl(struct sender_state *s) {
+unsigned char alpn_proto_list[] = {
+    18, 'n', 'e', 't', 'd', 'a', 't', 'a', '_', 's', 't', 'r', 'e', 'a', 'm', '/', '2', '.', '0',
+    8, 'h', 't', 't', 'p', '/', '1', '.', '1'
+};
+
+#define CONN_UPGRADE_VAL "upgrade"
+
+static bool rrdpush_sender_connect_ssl(struct sender_state *s __maybe_unused) {
 #ifdef ENABLE_HTTPS
     RRDHOST *host = s->host;
     bool ssl_required = host->destination && host->destination->ssl;
@@ -526,14 +584,19 @@ static bool rrdpush_sender_connect_ssl(struct sender_state *s) {
     if(!ssl_required)
         return true;
 
-    if (netdata_ssl_open(&host->sender->ssl, netdata_ssl_streaming_sender_ctx, s->rrdpush_sender_socket)) {
+    if (netdata_ssl_open_ext(&host->sender->ssl, netdata_ssl_streaming_sender_ctx, s->rrdpush_sender_socket, alpn_proto_list, sizeof(alpn_proto_list))) {
         if(!netdata_ssl_connect(&host->sender->ssl)) {
             // couldn't connect
 
+            ND_LOG_STACK lgs[] = {
+                    ND_LOG_FIELD_TXT(NDF_RESPONSE_CODE, RRDPUSH_STATUS_SSL_ERROR),
+                    ND_LOG_FIELD_END(),
+            };
+            ND_LOG_STACK_PUSH(lgs);
+
             worker_is_busy(WORKER_SENDER_JOB_DISCONNECT_SSL_ERROR);
             rrdpush_sender_thread_close_socket(host);
-            host->destination->last_error = "SSL error";
-            host->destination->last_handshake = STREAM_HANDSHAKE_ERROR_SSL_ERROR;
+            host->destination->reason = STREAM_HANDSHAKE_ERROR_SSL_ERROR;
             host->destination->postpone_reconnection_until = now_realtime_sec() + 5 * 60;
             return false;
         }
@@ -542,11 +605,16 @@ static bool rrdpush_sender_connect_ssl(struct sender_state *s) {
             security_test_certificate(host->sender->ssl.conn)) {
             // certificate is not valid
 
+            ND_LOG_STACK lgs[] = {
+                    ND_LOG_FIELD_TXT(NDF_RESPONSE_CODE, RRDPUSH_STATUS_INVALID_SSL_CERTIFICATE),
+                    ND_LOG_FIELD_END(),
+            };
+            ND_LOG_STACK_PUSH(lgs);
+
             worker_is_busy(WORKER_SENDER_JOB_DISCONNECT_SSL_ERROR);
-            error("SSL: closing the stream connection, because the server SSL certificate is not valid.");
+            netdata_log_error("SSL: closing the stream connection, because the server SSL certificate is not valid.");
             rrdpush_sender_thread_close_socket(host);
-            host->destination->last_error = "invalid SSL certificate";
-            host->destination->last_handshake = STREAM_HANDSHAKE_ERROR_INVALID_CERTIFICATE;
+            host->destination->reason = STREAM_HANDSHAKE_ERROR_INVALID_CERTIFICATE;
             host->destination->postpone_reconnection_until = now_realtime_sec() + 5 * 60;
             return false;
         }
@@ -554,13 +622,117 @@ static bool rrdpush_sender_connect_ssl(struct sender_state *s) {
         return true;
     }
 
-    error("SSL: failed to establish connection.");
+    ND_LOG_STACK lgs[] = {
+            ND_LOG_FIELD_TXT(NDF_RESPONSE_CODE, RRDPUSH_STATUS_CANT_ESTABLISH_SSL_CONNECTION),
+            ND_LOG_FIELD_END(),
+    };
+    ND_LOG_STACK_PUSH(lgs);
+
+    netdata_log_error("SSL: failed to establish connection.");
     return false;
 
 #else
     // SSL is not enabled
     return true;
 #endif
+}
+
+static int rrdpush_http_upgrade_prelude(RRDHOST *host, struct sender_state *s) {
+
+    char http[HTTP_HEADER_SIZE + 1];
+    snprintfz(http, HTTP_HEADER_SIZE,
+            "GET " NETDATA_STREAM_URL HTTP_1_1 HTTP_ENDL
+            "Upgrade: " NETDATA_STREAM_PROTO_NAME HTTP_ENDL
+            "Connection: Upgrade"
+            HTTP_HDR_END);
+
+    ssize_t bytes = send_timeout(
+#ifdef ENABLE_HTTPS
+        &host->sender->ssl,
+#endif
+        s->rrdpush_sender_socket,
+        http,
+        strlen(http),
+        0,
+        1000);
+
+    bytes = recv_timeout(
+#ifdef ENABLE_HTTPS
+        &host->sender->ssl,
+#endif
+        s->rrdpush_sender_socket,
+        http,
+        HTTP_HEADER_SIZE,
+        0,
+        1000);
+
+    if (bytes <= 0) {
+        error_report("Error reading from remote");
+        return 1;
+    }
+
+    rbuf_t buf = rbuf_create(bytes);
+    rbuf_push(buf, http, bytes);
+
+    http_parse_ctx ctx;
+    http_parse_ctx_create(&ctx);
+    ctx.flags |= HTTP_PARSE_FLAG_DONT_WAIT_FOR_CONTENT;
+
+    int rc;
+//    while((rc = parse_http_response(buf, &ctx)) == HTTP_PARSE_NEED_MORE_DATA);
+    rc = parse_http_response(buf, &ctx);
+
+    if (rc != HTTP_PARSE_SUCCESS) {
+        error_report("Failed to parse HTTP response sent. (%d)", rc);
+        goto err_cleanup;
+    }
+    if (ctx.http_code == HTTP_RESP_MOVED_PERM) {
+        const char *hdr = get_http_header_by_name(&ctx, "location");
+        if (hdr) 
+            error_report("HTTP response is %d Moved Permanently (location: \"%s\") instead of expected %d Switching Protocols.", ctx.http_code, hdr, HTTP_RESP_SWITCH_PROTO);
+        else
+            error_report("HTTP response is %d instead of expected %d Switching Protocols.", ctx.http_code, HTTP_RESP_SWITCH_PROTO);
+        goto err_cleanup;
+    }
+    if (ctx.http_code == HTTP_RESP_NOT_FOUND) {
+        error_report("HTTP response is %d instead of expected %d Switching Protocols. Parent version too old.", ctx.http_code, HTTP_RESP_SWITCH_PROTO);
+        // TODO set some flag here that will signify parent is older version
+        // and to try connection without rrdpush_http_upgrade_prelude next time
+        goto err_cleanup;
+    }
+    if (ctx.http_code != HTTP_RESP_SWITCH_PROTO) {
+        error_report("HTTP response is %d instead of expected %d Switching Protocols", ctx.http_code, HTTP_RESP_SWITCH_PROTO);
+        goto err_cleanup;
+    }
+
+    const char *hdr = get_http_header_by_name(&ctx, "connection");
+    if (!hdr) {
+        error_report("Missing \"connection\" header in reply");
+        goto err_cleanup;
+    }
+    if (strncmp(hdr, CONN_UPGRADE_VAL, strlen(CONN_UPGRADE_VAL))) {
+        error_report("Expected \"connection: " CONN_UPGRADE_VAL "\"");
+        goto err_cleanup;
+    }
+
+    hdr = get_http_header_by_name(&ctx, "upgrade");
+    if (!hdr) {
+        error_report("Missing \"upgrade\" header in reply");
+        goto err_cleanup;
+    }
+    if (strncmp(hdr, NETDATA_STREAM_PROTO_NAME, strlen(NETDATA_STREAM_PROTO_NAME))) {
+        error_report("Expected \"upgrade: " NETDATA_STREAM_PROTO_NAME "\"");
+        goto err_cleanup;
+    }
+
+    netdata_log_debug(D_STREAM, "Stream sender upgrade to \"" NETDATA_STREAM_PROTO_NAME "\" successful");
+    rbuf_free(buf);
+    http_parse_ctx_destroy(&ctx);
+    return 0;
+err_cleanup:
+    rbuf_free(buf);
+    http_parse_ctx_destroy(&ctx);
+    return 1;
 }
 
 static bool rrdpush_sender_thread_connect_to_parent(RRDHOST *host, int default_port, int timeout, struct sender_state *s) {
@@ -584,20 +756,14 @@ static bool rrdpush_sender_thread_connect_to_parent(RRDHOST *host, int default_p
     );
 
     if(unlikely(s->rrdpush_sender_socket == -1)) {
-        // error("STREAM %s [send to %s]: could not connect to parent node at this time.", rrdhost_hostname(host), host->rrdpush_send_destination);
+        // netdata_log_error("STREAM %s [send to %s]: could not connect to parent node at this time.", rrdhost_hostname(host), host->rrdpush_send_destination);
         return false;
     }
 
-    // info("STREAM %s [send to %s]: initializing communication...", rrdhost_hostname(host), s->connected_to);
+    // netdata_log_info("STREAM %s [send to %s]: initializing communication...", rrdhost_hostname(host), s->connected_to);
 
     // reset our capabilities to default
-    s->capabilities = stream_our_capabilities();
-
-#ifdef  ENABLE_COMPRESSION
-    // If we don't want compression, remove it from our capabilities
-    if(!(s->flags & SENDER_FLAG_COMPRESSION))
-        s->capabilities &= ~STREAM_CAP_COMPRESSION;
-#endif  // ENABLE_COMPRESSION
+    s->capabilities = stream_our_capabilities(host, true);
 
     /* TODO: During the implementation of #7265 switch the set of variables to HOST_* and CONTAINER_* if the
              version negotiation resulted in a high enough version.
@@ -653,7 +819,7 @@ static bool rrdpush_sender_thread_connect_to_parent(RRDHOST *host, int default_p
                  "&NETDATA_SYSTEM_TOTAL_RAM=%s"
                  "&NETDATA_SYSTEM_TOTAL_DISK_SIZE=%s"
                  "&NETDATA_PROTOCOL_VERSION=%s"
-                 " HTTP/1.1\r\n"
+                 HTTP_1_1 HTTP_ENDL
                  "User-Agent: %s/%s\r\n"
                  "Accept: */*\r\n\r\n"
                  , host->rrdpush_send_api_key
@@ -708,7 +874,21 @@ static bool rrdpush_sender_thread_connect_to_parent(RRDHOST *host, int default_p
     if(!rrdpush_sender_connect_ssl(s))
         return false;
 
-    ssize_t bytes, len = strlen(http);
+    if (s->parent_using_h2o && rrdpush_http_upgrade_prelude(host, s)) {
+        ND_LOG_STACK lgs[] = {
+                ND_LOG_FIELD_TXT(NDF_RESPONSE_CODE, RRDPUSH_STATUS_CANT_UPGRADE_CONNECTION),
+                ND_LOG_FIELD_END(),
+        };
+        ND_LOG_STACK_PUSH(lgs);
+
+        worker_is_busy(WORKER_SENDER_JOB_DISCONNECT_CANT_UPGRADE_CONNECTION);
+        rrdpush_sender_thread_close_socket(host);
+        host->destination->reason = STREAM_HANDSHAKE_ERROR_HTTP_UPGRADE;
+        host->destination->postpone_reconnection_until = now_realtime_sec() + 1 * 60;
+        return false;
+    }
+    
+    ssize_t bytes, len = (ssize_t)strlen(http);
 
     bytes = send_timeout(
 #ifdef ENABLE_HTTPS
@@ -721,11 +901,20 @@ static bool rrdpush_sender_thread_connect_to_parent(RRDHOST *host, int default_p
         timeout);
 
     if(bytes <= 0) { // timeout is 0
+        ND_LOG_STACK lgs[] = {
+                ND_LOG_FIELD_TXT(NDF_RESPONSE_CODE, RRDPUSH_STATUS_TIMEOUT),
+                ND_LOG_FIELD_END(),
+        };
+        ND_LOG_STACK_PUSH(lgs);
+
         worker_is_busy(WORKER_SENDER_JOB_DISCONNECT_TIMEOUT);
         rrdpush_sender_thread_close_socket(host);
-        error("STREAM %s [send to %s]: failed to send HTTP header to remote netdata.", rrdhost_hostname(host), s->connected_to);
-        host->destination->last_error = "timeout while sending request";
-        host->destination->last_handshake = STREAM_HANDSHAKE_ERROR_SEND_TIMEOUT;
+
+        nd_log(NDLS_DAEMON, NDLP_ERR,
+               "STREAM %s [send to %s]: failed to send HTTP header to remote netdata.",
+               rrdhost_hostname(host), s->connected_to);
+
+        host->destination->reason = STREAM_HANDSHAKE_ERROR_SEND_TIMEOUT;
         host->destination->postpone_reconnection_until = now_realtime_sec() + 1 * 60;
         return false;
     }
@@ -741,44 +930,62 @@ static bool rrdpush_sender_thread_connect_to_parent(RRDHOST *host, int default_p
         timeout);
 
     if(bytes <= 0) { // timeout is 0
+        ND_LOG_STACK lgs[] = {
+                ND_LOG_FIELD_TXT(NDF_RESPONSE_CODE, RRDPUSH_STATUS_TIMEOUT),
+                ND_LOG_FIELD_END(),
+        };
+        ND_LOG_STACK_PUSH(lgs);
+
         worker_is_busy(WORKER_SENDER_JOB_DISCONNECT_TIMEOUT);
         rrdpush_sender_thread_close_socket(host);
-        error("STREAM %s [send to %s]: remote netdata does not respond.", rrdhost_hostname(host), s->connected_to);
-        host->destination->last_error = "timeout while expecting first response";
-        host->destination->last_handshake = STREAM_HANDSHAKE_ERROR_RECEIVE_TIMEOUT;
+
+        nd_log(NDLS_DAEMON, NDLP_ERR,
+               "STREAM %s [send to %s]: remote netdata does not respond.",
+               rrdhost_hostname(host), s->connected_to);
+
+        host->destination->reason = STREAM_HANDSHAKE_ERROR_RECEIVE_TIMEOUT;
         host->destination->postpone_reconnection_until = now_realtime_sec() + 30;
         return false;
     }
 
     if(sock_setnonblock(s->rrdpush_sender_socket) < 0)
-        error("STREAM %s [send to %s]: cannot set non-blocking mode for socket.", rrdhost_hostname(host), s->connected_to);
+        nd_log(NDLS_DAEMON, NDLP_WARNING,
+               "STREAM %s [send to %s]: cannot set non-blocking mode for socket.",
+               rrdhost_hostname(host), s->connected_to);
 
     if(sock_enlarge_out(s->rrdpush_sender_socket) < 0)
-        error("STREAM %s [send to %s]: cannot enlarge the socket buffer.", rrdhost_hostname(host), s->connected_to);
+        nd_log(NDLS_DAEMON, NDLP_WARNING,
+               "STREAM %s [send to %s]: cannot enlarge the socket buffer.",
+               rrdhost_hostname(host), s->connected_to);
 
     http[bytes] = '\0';
-    debug(D_STREAM, "Response to sender from far end: %s", http);
     if(!rrdpush_sender_validate_response(host, s, http, bytes))
         return false;
 
-#ifdef ENABLE_COMPRESSION
-    if(stream_has_capability(s, STREAM_CAP_COMPRESSION)) {
-        if(!s->compressor)
-            s->compressor = create_compressor();
-        else
-            s->compressor->reset(s->compressor);
-    }
-#endif  //ENABLE_COMPRESSION
+    rrdpush_compression_initialize(s);
 
     log_sender_capabilities(s);
 
-    debug(D_STREAM, "STREAM: Connected on fd %d...", s->rrdpush_sender_socket);
+    ND_LOG_STACK lgs[] = {
+            ND_LOG_FIELD_TXT(NDF_RESPONSE_CODE, RRDPUSH_STATUS_CONNECTED),
+            ND_LOG_FIELD_END(),
+    };
+    ND_LOG_STACK_PUSH(lgs);
+
+    nd_log(NDLS_DAEMON, NDLP_DEBUG,
+           "STREAM %s: connected to %s...",
+           rrdhost_hostname(host), s->connected_to);
 
     return true;
 }
 
-static bool attempt_to_connect(struct sender_state *state)
-{
+static bool attempt_to_connect(struct sender_state *state) {
+    ND_LOG_STACK lgs[] = {
+            ND_LOG_FIELD_UUID(NDF_MESSAGE_ID, &streaming_to_parent_msgid),
+            ND_LOG_FIELD_END(),
+    };
+    ND_LOG_STACK_PUSH(lgs);
+
     state->send_attempts = 0;
 
     // reset the bytes we have sent for this session
@@ -820,18 +1027,18 @@ static bool attempt_to_connect(struct sender_state *state)
     return false;
 }
 
-// TCP window is open and we have data to transmit.
+// TCP window is open, and we have data to transmit.
 static ssize_t attempt_to_send(struct sender_state *s) {
-    ssize_t ret = 0;
+    ssize_t ret;
 
 #ifdef NETDATA_INTERNAL_CHECKS
     struct circular_buffer *cb = s->buffer;
 #endif
 
-    netdata_mutex_lock(&s->mutex);
+    sender_lock(s);
     char *chunk;
     size_t outstanding = cbuffer_next_unsafe(s->buffer, &chunk);
-    debug(D_STREAM, "STREAM: Sending data. Buffer r=%zu w=%zu s=%zu, next chunk=%zu", cb->read, cb->write, cb->size, outstanding);
+    netdata_log_debug(D_STREAM, "STREAM: Sending data. Buffer r=%zu w=%zu s=%zu, next chunk=%zu", cb->read, cb->write, cb->size, outstanding);
 
 #ifdef ENABLE_HTTPS
     if(SSL_connection(&s->ssl))
@@ -846,21 +1053,21 @@ static ssize_t attempt_to_send(struct sender_state *s) {
         cbuffer_remove_unsafe(s->buffer, ret);
         s->sent_bytes_on_this_connection += ret;
         s->sent_bytes += ret;
-        debug(D_STREAM, "STREAM %s [send to %s]: Sent %zd bytes", rrdhost_hostname(s->host), s->connected_to, ret);
+        netdata_log_debug(D_STREAM, "STREAM %s [send to %s]: Sent %zd bytes", rrdhost_hostname(s->host), s->connected_to, ret);
     }
     else if (ret == -1 && (errno == EAGAIN || errno == EINTR || errno == EWOULDBLOCK))
-        debug(D_STREAM, "STREAM %s [send to %s]: unavailable after polling POLLOUT", rrdhost_hostname(s->host), s->connected_to);
+        netdata_log_debug(D_STREAM, "STREAM %s [send to %s]: unavailable after polling POLLOUT", rrdhost_hostname(s->host), s->connected_to);
     else if (ret == -1) {
         worker_is_busy(WORKER_SENDER_JOB_DISCONNECT_SEND_ERROR);
-        debug(D_STREAM, "STREAM: Send failed - closing socket...");
-        error("STREAM %s [send to %s]: failed to send metrics - closing connection - we have sent %zu bytes on this connection.",  rrdhost_hostname(s->host), s->connected_to, s->sent_bytes_on_this_connection);
+        netdata_log_debug(D_STREAM, "STREAM: Send failed - closing socket...");
+        netdata_log_error("STREAM %s [send to %s]: failed to send metrics - closing connection - we have sent %zu bytes on this connection.",  rrdhost_hostname(s->host), s->connected_to, s->sent_bytes_on_this_connection);
         rrdpush_sender_thread_close_socket(s->host);
     }
     else
-        debug(D_STREAM, "STREAM: send() returned 0 -> no error but no transmission");
+        netdata_log_debug(D_STREAM, "STREAM: send() returned 0 -> no error but no transmission");
 
     replication_recalculate_buffer_used_ratio_unsafe(s);
-    netdata_mutex_unlock(&s->mutex);
+    sender_unlock(s);
 
     return ret;
 }
@@ -893,11 +1100,11 @@ static ssize_t attempt_read(struct sender_state *s) {
 
     if (ret == 0 || errno == ECONNRESET) {
         worker_is_busy(WORKER_SENDER_JOB_DISCONNECT_PARENT_CLOSED);
-        error("STREAM %s [send to %s]: connection closed by far end.", rrdhost_hostname(s->host), s->connected_to);
+        netdata_log_error("STREAM %s [send to %s]: connection closed by far end.", rrdhost_hostname(s->host), s->connected_to);
     }
     else {
         worker_is_busy(WORKER_SENDER_JOB_DISCONNECT_RECEIVE_ERROR);
-        error("STREAM %s [send to %s]: error during receive (%zd) - closing connection.", rrdhost_hostname(s->host), s->connected_to, ret);
+        netdata_log_error("STREAM %s [send to %s]: error during receive (%zd) - closing connection.", rrdhost_hostname(s->host), s->connected_to, ret);
     }
 
     rrdpush_sender_thread_close_socket(s->host);
@@ -931,12 +1138,13 @@ void stream_execute_function_callback(BUFFER *func_wb, int code, void *data) {
         sender_commit(s, wb, STREAM_TRAFFIC_TYPE_FUNCTIONS);
         sender_thread_buffer_free();
 
-        internal_error(true, "STREAM %s [send to %s] FUNCTION transaction %s sending back response (%zu bytes, %llu usec).",
+        internal_error(true, "STREAM %s [send to %s] FUNCTION transaction %s sending back response (%zu bytes, %"PRIu64" usec).",
                        rrdhost_hostname(s->host), s->connected_to,
                        string2str(tmp->transaction),
                        buffer_strlen(func_wb),
                        now_realtime_usec() - tmp->received_ut);
     }
+
     string_freez(tmp->transaction);
     buffer_free(func_wb);
     freez(tmp);
@@ -946,32 +1154,41 @@ void stream_execute_function_callback(BUFFER *func_wb, int code, void *data) {
 void execute_commands(struct sender_state *s) {
     worker_is_busy(WORKER_SENDER_JOB_EXECUTE);
 
+    ND_LOG_STACK lgs[] = {
+            ND_LOG_FIELD_CB(NDF_REQUEST, line_splitter_reconstruct_line, &s->line),
+            ND_LOG_FIELD_END(),
+    };
+    ND_LOG_STACK_PUSH(lgs);
+
     char *start = s->read_buffer, *end = &s->read_buffer[s->read_len], *newline;
     *end = 0;
     while( start < end && (newline = strchr(start, '\n')) ) {
         *newline = '\0';
 
-        log_access("STREAM: %d from '%s' for host '%s': %s",
-                   gettid(), s->connected_to, rrdhost_hostname(s->host), start);
+        if (s->receiving_function_payload && unlikely(strcmp(start, PLUGINSD_KEYWORD_FUNCTION_PAYLOAD_END) != 0)) {
+            if (buffer_strlen(s->function_payload.payload) != 0)
+                buffer_strcat(s->function_payload.payload, "\n");
+            buffer_strcat(s->function_payload.payload, start);
+            start = newline + 1;
+            continue;
+        }
 
-        // internal_error(true, "STREAM %s [send to %s] received command over connection: %s", rrdhost_hostname(s->host), s->connected_to, start);
+        s->line.count++;
+        s->line.num_words = quoted_strings_splitter_pluginsd(start, s->line.words, PLUGINSD_MAX_WORDS);
+        const char *command = get_word(s->line.words, s->line.num_words, 0);
 
-        char *words[PLUGINSD_MAX_WORDS] = { NULL };
-        size_t num_words = pluginsd_split_words(start, words, PLUGINSD_MAX_WORDS);
-
-        const char *keyword = get_word(words, num_words, 0);
-
-        if(keyword && strcmp(keyword, PLUGINSD_KEYWORD_FUNCTION) == 0) {
+        if(command && (strcmp(command, PLUGINSD_KEYWORD_FUNCTION) == 0 || strcmp(command, PLUGINSD_KEYWORD_FUNCTION_PAYLOAD_END) == 0)) {
             worker_is_busy(WORKER_SENDER_JOB_FUNCTION_REQUEST);
+            nd_log(NDLS_ACCESS, NDLP_INFO, NULL);
 
-            char *transaction = get_word(words, num_words, 1);
-            char *timeout_s = get_word(words, num_words, 2);
-            char *function = get_word(words, num_words, 3);
+            char *transaction = s->receiving_function_payload ? s->function_payload.txid : get_word(s->line.words, s->line.num_words, 1);
+            char *timeout_s = s->receiving_function_payload ? s->function_payload.timeout : get_word(s->line.words, s->line.num_words, 2);
+            char *function = s->receiving_function_payload ? s->function_payload.fn_name : get_word(s->line.words, s->line.num_words, 3);
 
             if(!transaction || !*transaction || !timeout_s || !*timeout_s || !function || !*function) {
-                error("STREAM %s [send to %s] %s execution command is incomplete (transaction = '%s', timeout = '%s', function = '%s'). Ignoring it.",
+                netdata_log_error("STREAM %s [send to %s] %s execution command is incomplete (transaction = '%s', timeout = '%s', function = '%s'). Ignoring it.",
                       rrdhost_hostname(s->host), s->connected_to,
-                      keyword,
+                      command,
                       transaction?transaction:"(unset)",
                       timeout_s?timeout_s:"(unset)",
                       function?function:"(unset)");
@@ -986,26 +1203,84 @@ void execute_commands(struct sender_state *s) {
                 tmp->transaction = string_strdupz(transaction);
                 BUFFER *wb = buffer_create(PLUGINSD_LINE_MAX + 1, &netdata_buffers_statistics.buffers_functions);
 
-                int code = rrd_call_function_async(s->host, wb, timeout, function, stream_execute_function_callback, tmp);
+                char *payload = s->receiving_function_payload ? (char *)buffer_tostring(s->function_payload.payload) : NULL;
+                int code = rrd_function_run(s->host, wb, timeout, function, false, transaction,
+                                            stream_execute_function_callback, tmp, NULL, NULL, payload);
+
                 if(code != HTTP_RESP_OK) {
-                    rrd_call_function_error(wb, "Failed to route request to collector", code);
+                    if (!buffer_strlen(wb))
+                        rrd_call_function_error(wb, "Failed to route request to collector", code);
+
                     stream_execute_function_callback(wb, code, tmp);
                 }
             }
-        }
-        else if (keyword && strcmp(keyword, PLUGINSD_KEYWORD_REPLAY_CHART) == 0) {
-            worker_is_busy(WORKER_SENDER_JOB_REPLAY_REQUEST);
 
-            const char *chart_id = get_word(words, num_words, 1);
-            const char *start_streaming = get_word(words, num_words, 2);
-            const char *after = get_word(words, num_words, 3);
-            const char *before = get_word(words, num_words, 4);
+            if (s->receiving_function_payload) {
+                s->receiving_function_payload = false;
+
+                buffer_free(s->function_payload.payload);
+                freez(s->function_payload.txid);
+                freez(s->function_payload.timeout);
+                freez(s->function_payload.fn_name);
+
+                memset(&s->function_payload, 0, sizeof(struct function_payload_state));
+            }
+        }
+        else if (command && strcmp(command, PLUGINSD_KEYWORD_FUNCTION_PAYLOAD) == 0) {
+            nd_log(NDLS_ACCESS, NDLP_INFO, NULL);
+
+            if (s->receiving_function_payload) {
+                netdata_log_error("STREAM %s [send to %s] received %s command while already receiving function payload",
+                                  rrdhost_hostname(s->host), s->connected_to, command);
+                s->receiving_function_payload = false;
+                buffer_free(s->function_payload.payload);
+                s->function_payload.payload = NULL;
+
+                // TODO send error response
+            }
+
+            char *transaction = get_word(s->line.words, s->line.num_words, 1);
+            char *timeout_s = get_word(s->line.words, s->line.num_words, 2);
+            char *function = get_word(s->line.words, s->line.num_words, 3);
+
+            if(!transaction || !*transaction || !timeout_s || !*timeout_s || !function || !*function) {
+                netdata_log_error("STREAM %s [send to %s] %s execution command is incomplete (transaction = '%s', timeout = '%s', function = '%s'). Ignoring it.",
+                      rrdhost_hostname(s->host), s->connected_to,
+                      command,
+                      transaction?transaction:"(unset)",
+                      timeout_s?timeout_s:"(unset)",
+                      function?function:"(unset)");
+            }
+
+            s->receiving_function_payload = true;
+            s->function_payload.payload = buffer_create(4096, &netdata_buffers_statistics.buffers_functions);
+
+            s->function_payload.txid = strdupz(get_word(s->line.words, s->line.num_words, 1));
+            s->function_payload.timeout = strdupz(get_word(s->line.words, s->line.num_words, 2));
+            s->function_payload.fn_name = strdupz(get_word(s->line.words, s->line.num_words, 3));
+        }
+        else if(command && strcmp(command, PLUGINSD_KEYWORD_FUNCTION_CANCEL) == 0) {
+            worker_is_busy(WORKER_SENDER_JOB_FUNCTION_REQUEST);
+            nd_log(NDLS_ACCESS, NDLP_DEBUG, NULL);
+
+            char *transaction = get_word(s->line.words, s->line.num_words, 1);
+            if(transaction && *transaction)
+                rrd_function_cancel(transaction);
+        }
+        else if (command && strcmp(command, PLUGINSD_KEYWORD_REPLAY_CHART) == 0) {
+            worker_is_busy(WORKER_SENDER_JOB_REPLAY_REQUEST);
+            nd_log(NDLS_ACCESS, NDLP_DEBUG, NULL);
+
+            const char *chart_id = get_word(s->line.words, s->line.num_words, 1);
+            const char *start_streaming = get_word(s->line.words, s->line.num_words, 2);
+            const char *after = get_word(s->line.words, s->line.num_words, 3);
+            const char *before = get_word(s->line.words, s->line.num_words, 4);
 
             if (!chart_id || !start_streaming || !after || !before) {
-                error("STREAM %s [send to %s] %s command is incomplete"
+                netdata_log_error("STREAM %s [send to %s] %s command is incomplete"
                       " (chart=%s, start_streaming=%s, after=%s, before=%s)",
                       rrdhost_hostname(s->host), s->connected_to,
-                      keyword,
+                      command,
                       chart_id ? chart_id : "(unset)",
                       start_streaming ? start_streaming : "(unset)",
                       after ? after : "(unset)",
@@ -1020,12 +1295,14 @@ void execute_commands(struct sender_state *s) {
             }
         }
         else {
-            error("STREAM %s [send to %s] received unknown command over connection: %s", rrdhost_hostname(s->host), s->connected_to, words[0]?words[0]:"(unset)");
+            netdata_log_error("STREAM %s [send to %s] received unknown command over connection: %s", rrdhost_hostname(s->host), s->connected_to, s->line.words[0]?s->line.words[0]:"(unset)");
         }
 
+        line_splitter_reset(&s->line);
         worker_is_busy(WORKER_SENDER_JOB_EXECUTE);
         start = newline + 1;
     }
+
     if (start < end) {
         memmove(s->read_buffer, start, end-start);
         s->read_len = end - start;
@@ -1051,7 +1328,7 @@ static bool rrdpush_sender_pipe_close(RRDHOST *host, int *pipe_fds, bool reopen)
     int new_pipe_fds[2];
     if(reopen) {
         if(pipe(new_pipe_fds) != 0) {
-            error("STREAM %s [send]: cannot create required pipe.", rrdhost_hostname(host));
+            netdata_log_error("STREAM %s [send]: cannot create required pipe.", rrdhost_hostname(host));
             new_pipe_fds[PIPE_READ] = -1;
             new_pipe_fds[PIPE_WRITE] = -1;
             ret = false;
@@ -1091,138 +1368,26 @@ void rrdpush_signal_sender_to_wake_up(struct sender_state *s) {
 
     // signal the sender there are more data
     if (pipe_fd != -1 && write(pipe_fd, " ", 1) == -1) {
-        error("STREAM %s [send]: cannot write to internal pipe.", rrdhost_hostname(host));
+        netdata_log_error("STREAM %s [send]: cannot write to internal pipe.", rrdhost_hostname(host));
         rrdpush_sender_pipe_close(host, s->rrdpush_sender_pipe, true);
     }
-}
-
-static NETDATA_DOUBLE rrdhost_sender_replication_completion(RRDHOST *host, time_t now, size_t *instances) {
-    size_t charts = rrdhost_sender_replicating_charts(host);
-    NETDATA_DOUBLE completion;
-    if(!charts || !host->sender || !host->sender->replication.oldest_request_after_t)
-        completion = 100.0;
-    else if(!host->sender->replication.latest_completed_before_t || host->sender->replication.latest_completed_before_t < host->sender->replication.oldest_request_after_t)
-        completion = 0.0;
-    else {
-        time_t total = now - host->sender->replication.oldest_request_after_t;
-        time_t current = host->sender->replication.latest_completed_before_t - host->sender->replication.oldest_request_after_t;
-        completion = (NETDATA_DOUBLE) current * 100.0 / (NETDATA_DOUBLE) total;
-    }
-
-    *instances = charts;
-
-    return completion;
-}
-
-void rrdhost_sender_to_json(BUFFER *wb, RRDHOST *host, const char *key, time_t now __maybe_unused) {
-    bool online = rrdhost_flag_check(host, RRDHOST_FLAG_RRDPUSH_SENDER_CONNECTED);
-    buffer_json_member_add_object(wb, key);
-
-    if(host->sender)
-        buffer_json_member_add_uint64(wb, "hops", host->sender->hops);
-
-    buffer_json_member_add_boolean(wb, "online", online);
-
-    if(host->sender && host->sender->last_state_since_t) {
-        buffer_json_member_add_time_t(wb, "since", host->sender->last_state_since_t);
-        buffer_json_member_add_time_t(wb, "age", now - host->sender->last_state_since_t);
-    }
-
-    if(!online && host->sender && host->sender->exit.reason)
-        buffer_json_member_add_string(wb, "reason", host->sender->exit.reason);
-
-    buffer_json_member_add_object(wb, "replication");
-    {
-        size_t instances;
-        NETDATA_DOUBLE completion = rrdhost_sender_replication_completion(host, now, &instances);
-        buffer_json_member_add_boolean(wb, "in_progress", instances);
-        buffer_json_member_add_double(wb, "completion", completion);
-        buffer_json_member_add_uint64(wb, "instances", instances);
-    }
-    buffer_json_object_close(wb);
-
-    if(host->sender) {
-        netdata_mutex_lock(&host->sender->mutex);
-
-        buffer_json_member_add_object(wb, "destination");
-        {
-            char buf[1024 + 1];
-            if(online && host->sender->rrdpush_sender_socket != -1) {
-                SOCKET_PEERS peers = socket_peers(host->sender->rrdpush_sender_socket);
-                bool ssl = SSL_connection(&host->sender->ssl);
-
-                snprintfz(buf, 1024, "[%s]:%d%s", peers.local.ip, peers.local.port, ssl ? ":SSL" : "");
-                buffer_json_member_add_string(wb, "local", buf);
-
-                snprintfz(buf, 1024, "[%s]:%d%s", peers.peer.ip, peers.peer.port, ssl ? ":SSL" : "");
-                buffer_json_member_add_string(wb, "remote", buf);
-
-                stream_capabilities_to_json_array(wb, host->sender->capabilities, "capabilities");
-
-                buffer_json_member_add_object(wb, "traffic");
-                {
-                    bool compression = false;
-#ifdef ENABLE_COMPRESSION
-                    compression = (stream_has_capability(host->sender, STREAM_CAP_COMPRESSION) && host->sender->compressor);
-#endif
-                    buffer_json_member_add_boolean(wb, "compression", compression);
-                    buffer_json_member_add_uint64(wb, "data", host->sender->sent_bytes_on_this_connection_per_type[STREAM_TRAFFIC_TYPE_DATA]);
-                    buffer_json_member_add_uint64(wb, "metadata", host->sender->sent_bytes_on_this_connection_per_type[STREAM_TRAFFIC_TYPE_METADATA]);
-                    buffer_json_member_add_uint64(wb, "functions", host->sender->sent_bytes_on_this_connection_per_type[STREAM_TRAFFIC_TYPE_FUNCTIONS]);
-                    buffer_json_member_add_uint64(wb, "replication", host->sender->sent_bytes_on_this_connection_per_type[STREAM_TRAFFIC_TYPE_REPLICATION]);
-                }
-                buffer_json_object_close(wb); // traffic
-            }
-
-            buffer_json_member_add_array(wb, "candidates");
-            struct rrdpush_destinations *d;
-            for (d = host->destinations; d; d = d->next) {
-                buffer_json_add_array_item_object(wb);
-                {
-
-                    if (d->ssl) {
-                        snprintfz(buf, 1024, "%s:SSL", string2str(d->destination));
-                        buffer_json_member_add_string(wb, "destination", buf);
-                    }
-                    else
-                        buffer_json_member_add_string(wb, "destination", string2str(d->destination));
-
-                    buffer_json_member_add_time_t(wb, "last_check", d->last_attempt);
-                    buffer_json_member_add_time_t(wb, "age", now - d->last_attempt);
-                    buffer_json_member_add_string(wb, "last_error", d->last_error);
-                    buffer_json_member_add_string(wb, "last_handshake",
-                                                  stream_handshake_error_to_string(d->last_handshake));
-                    buffer_json_member_add_time_t(wb, "next_check", d->postpone_reconnection_until);
-                    buffer_json_member_add_time_t(wb, "next_in",
-                                                  (d->postpone_reconnection_until > now) ?
-                                                  d->postpone_reconnection_until - now : 0);
-                }
-                buffer_json_object_close(wb); // each candidate
-            }
-            buffer_json_array_close(wb); // candidates
-        }
-        buffer_json_object_close(wb); // destination
-
-        netdata_mutex_unlock(&host->sender->mutex);
-    }
-
-    buffer_json_object_close(wb); // streaming
 }
 
 static bool rrdhost_set_sender(RRDHOST *host) {
     if(unlikely(!host->sender)) return false;
 
     bool ret = false;
-    netdata_mutex_lock(&host->sender->mutex);
+    sender_lock(host->sender);
     if(!host->sender->tid) {
         rrdhost_flag_clear(host, RRDHOST_FLAG_RRDPUSH_SENDER_CONNECTED | RRDHOST_FLAG_RRDPUSH_SENDER_READY_4_METRICS);
         rrdhost_flag_set(host, RRDHOST_FLAG_RRDPUSH_SENDER_SPAWN);
+        host->rrdpush_sender_connection_counter++;
         host->sender->tid = gettid();
         host->sender->last_state_since_t = now_realtime_sec();
-        host->sender->exit.reason = NULL;
+        host->sender->exit.reason = STREAM_HANDSHAKE_NEVER;
         ret = true;
     }
-    netdata_mutex_unlock(&host->sender->mutex);
+    sender_unlock(host->sender);
 
     rrdpush_reset_destinations_postpone_time(host);
 
@@ -1237,6 +1402,10 @@ static void rrdhost_clear_sender___while_having_sender_mutex(RRDHOST *host) {
         host->sender->exit.shutdown = false;
         rrdhost_flag_clear(host, RRDHOST_FLAG_RRDPUSH_SENDER_SPAWN | RRDHOST_FLAG_RRDPUSH_SENDER_CONNECTED | RRDHOST_FLAG_RRDPUSH_SENDER_READY_4_METRICS);
         host->sender->last_state_since_t = now_realtime_sec();
+        if(host->destination) {
+            host->destination->since = host->sender->last_state_since_t;
+            host->destination->reason = host->sender->exit.reason;
+        }
     }
 
     rrdpush_reset_destinations_postpone_time(host);
@@ -1248,25 +1417,25 @@ static bool rrdhost_sender_should_exit(struct sender_state *s) {
 
     if(unlikely(!service_running(SERVICE_STREAMING))) {
         if(!s->exit.reason)
-            s->exit.reason = "NETDATA EXIT";
+            s->exit.reason = STREAM_HANDSHAKE_DISCONNECT_NETDATA_EXIT;
         return true;
     }
 
     if(unlikely(!rrdhost_has_rrdpush_sender_enabled(s->host))) {
         if(!s->exit.reason)
-            s->exit.reason = "NON STREAMABLE HOST";
+            s->exit.reason = STREAM_HANDSHAKE_NON_STREAMABLE_HOST;
         return true;
     }
 
     if(unlikely(s->exit.shutdown)) {
         if(!s->exit.reason)
-            s->exit.reason = "SENDER SHUTDOWN REQUESTED";
+            s->exit.reason = STREAM_HANDSHAKE_DISCONNECT_SHUTDOWN;
         return true;
     }
 
     if(unlikely(rrdhost_flag_check(s->host, RRDHOST_FLAG_ORPHAN))) {
         if(!s->exit.reason)
-            s->exit.reason = "RECEIVER LEFT (ORPHAN HOST)";
+            s->exit.reason = STREAM_HANDSHAKE_DISCONNECT_ORPHAN_HOST;
         return true;
     }
 
@@ -1279,28 +1448,36 @@ static void rrdpush_sender_thread_cleanup_callback(void *ptr) {
 
     RRDHOST *host = s->host;
 
-    netdata_mutex_lock(&host->sender->mutex);
-    info("STREAM %s [send]: sending thread exits %s",
+    sender_lock(host->sender);
+    netdata_log_info("STREAM %s [send]: sending thread exits %s",
          rrdhost_hostname(host),
-         host->sender->exit.reason ? host->sender->exit.reason : "");
+         host->sender->exit.reason != STREAM_HANDSHAKE_NEVER ? stream_handshake_error_to_string(host->sender->exit.reason) : "");
 
     rrdpush_sender_thread_close_socket(host);
     rrdpush_sender_pipe_close(host, host->sender->rrdpush_sender_pipe, false);
 
     rrdhost_clear_sender___while_having_sender_mutex(host);
-    netdata_mutex_unlock(&host->sender->mutex);
+
+#ifdef NETDATA_LOG_STREAM_SENDER
+    if(host->sender->stream_log_fp) {
+        fclose(host->sender->stream_log_fp);
+        host->sender->stream_log_fp = NULL;
+    }
+#endif
+
+    sender_unlock(host->sender);
 
     freez(s->pipe_buffer);
     freez(s);
 }
 
-void rrdpush_initialize_ssl_ctx(RRDHOST *host) {
+void rrdpush_initialize_ssl_ctx(RRDHOST *host __maybe_unused) {
 #ifdef ENABLE_HTTPS
     static SPINLOCK sp = NETDATA_SPINLOCK_INITIALIZER;
-    netdata_spinlock_lock(&sp);
+    spinlock_lock(&sp);
 
     if(netdata_ssl_streaming_sender_ctx || !host) {
-        netdata_spinlock_unlock(&sp);
+        spinlock_unlock(&sp);
         return;
     }
 
@@ -1316,11 +1493,65 @@ void rrdpush_initialize_ssl_ctx(RRDHOST *host) {
         }
     }
 
-    netdata_spinlock_unlock(&sp);
+    spinlock_unlock(&sp);
 #endif
 }
 
+static bool stream_sender_log_capabilities(BUFFER *wb, void *ptr) {
+    struct sender_state *state = ptr;
+    if(!state)
+        return false;
+
+    stream_capabilities_to_string(wb, state->capabilities);
+    return true;
+}
+
+static bool stream_sender_log_transport(BUFFER *wb, void *ptr) {
+    struct sender_state *state = ptr;
+    if(!state)
+        return false;
+
+#ifdef ENABLE_HTTPS
+    buffer_strcat(wb, SSL_connection(&state->ssl) ? "https" : "http");
+#else
+    buffer_strcat(wb, "http");
+#endif
+    return true;
+}
+
+static bool stream_sender_log_dst_ip(BUFFER *wb, void *ptr) {
+    struct sender_state *state = ptr;
+    if(!state || state->rrdpush_sender_socket == -1)
+        return false;
+
+    SOCKET_PEERS peers = socket_peers(state->rrdpush_sender_socket);
+    buffer_strcat(wb, peers.peer.ip);
+    return true;
+}
+
+static bool stream_sender_log_dst_port(BUFFER *wb, void *ptr) {
+    struct sender_state *state = ptr;
+    if(!state || state->rrdpush_sender_socket == -1)
+        return false;
+
+    SOCKET_PEERS peers = socket_peers(state->rrdpush_sender_socket);
+    buffer_print_uint64(wb, peers.peer.port);
+    return true;
+}
+
 void *rrdpush_sender_thread(void *ptr) {
+    struct sender_state *s = ptr;
+
+    ND_LOG_STACK lgs[] = {
+            ND_LOG_FIELD_STR(NDF_NIDL_NODE, s->host->hostname),
+            ND_LOG_FIELD_CB(NDF_DST_IP, stream_sender_log_dst_ip, s),
+            ND_LOG_FIELD_CB(NDF_DST_PORT, stream_sender_log_dst_port, s),
+            ND_LOG_FIELD_CB(NDF_DST_TRANSPORT, stream_sender_log_transport, s),
+            ND_LOG_FIELD_CB(NDF_SRC_CAPABILITIES, stream_sender_log_capabilities, s),
+            ND_LOG_FIELD_END(),
+    };
+    ND_LOG_STACK_PUSH(lgs);
+
     worker_register("STREAMSND");
     worker_register_job_name(WORKER_SENDER_JOB_CONNECT, "connect");
     worker_register_job_name(WORKER_SENDER_JOB_PIPE_READ, "pipe read");
@@ -1331,7 +1562,7 @@ void *rrdpush_sender_thread(void *ptr) {
     // disconnection reasons
     worker_register_job_name(WORKER_SENDER_JOB_DISCONNECT_TIMEOUT, "disconnect timeout");
     worker_register_job_name(WORKER_SENDER_JOB_DISCONNECT_POLL_ERROR, "disconnect poll error");
-    worker_register_job_name(WORKER_SENDER_JOB_DISCONNECT_SOCKER_ERROR, "disconnect socket error");
+    worker_register_job_name(WORKER_SENDER_JOB_DISCONNECT_SOCKET_ERROR, "disconnect socket error");
     worker_register_job_name(WORKER_SENDER_JOB_DISCONNECT_OVERFLOW, "disconnect overflow");
     worker_register_job_name(WORKER_SENDER_JOB_DISCONNECT_SSL_ERROR, "disconnect ssl error");
     worker_register_job_name(WORKER_SENDER_JOB_DISCONNECT_PARENT_CLOSED, "disconnect parent closed");
@@ -1339,6 +1570,7 @@ void *rrdpush_sender_thread(void *ptr) {
     worker_register_job_name(WORKER_SENDER_JOB_DISCONNECT_SEND_ERROR, "disconnect send error");
     worker_register_job_name(WORKER_SENDER_JOB_DISCONNECT_NO_COMPRESSION, "disconnect no compression");
     worker_register_job_name(WORKER_SENDER_JOB_DISCONNECT_BAD_HANDSHAKE, "disconnect bad handshake");
+    worker_register_job_name(WORKER_SENDER_JOB_DISCONNECT_CANT_UPGRADE_CONNECTION, "disconnect cant upgrade");
 
     worker_register_job_name(WORKER_SENDER_JOB_REPLAY_REQUEST, "replay request");
     worker_register_job_name(WORKER_SENDER_JOB_FUNCTION_REQUEST, "function");
@@ -1346,27 +1578,28 @@ void *rrdpush_sender_thread(void *ptr) {
     worker_register_job_custom_metric(WORKER_SENDER_JOB_BUFFER_RATIO, "used buffer ratio", "%", WORKER_METRIC_ABSOLUTE);
     worker_register_job_custom_metric(WORKER_SENDER_JOB_BYTES_RECEIVED, "bytes received", "bytes/s", WORKER_METRIC_INCREMENT);
     worker_register_job_custom_metric(WORKER_SENDER_JOB_BYTES_SENT, "bytes sent", "bytes/s", WORKER_METRIC_INCREMENT);
+    worker_register_job_custom_metric(WORKER_SENDER_JOB_BYTES_COMPRESSED, "bytes compressed", "bytes/s", WORKER_METRIC_INCREMENTAL_TOTAL);
+    worker_register_job_custom_metric(WORKER_SENDER_JOB_BYTES_UNCOMPRESSED, "bytes uncompressed", "bytes/s", WORKER_METRIC_INCREMENTAL_TOTAL);
+    worker_register_job_custom_metric(WORKER_SENDER_JOB_BYTES_COMPRESSION_RATIO, "cumulative compression savings ratio", "%", WORKER_METRIC_ABSOLUTE);
     worker_register_job_custom_metric(WORKER_SENDER_JOB_REPLAY_DICT_SIZE, "replication dict entries", "entries", WORKER_METRIC_ABSOLUTE);
-
-    struct sender_state *s = ptr;
 
     if(!rrdhost_has_rrdpush_sender_enabled(s->host) || !s->host->rrdpush_send_destination ||
        !*s->host->rrdpush_send_destination || !s->host->rrdpush_send_api_key ||
        !*s->host->rrdpush_send_api_key) {
-        error("STREAM %s [send]: thread created (task id %d), but host has streaming disabled.",
+        netdata_log_error("STREAM %s [send]: thread created (task id %d), but host has streaming disabled.",
               rrdhost_hostname(s->host), gettid());
         return NULL;
     }
 
     if(!rrdhost_set_sender(s->host)) {
-        error("STREAM %s [send]: thread created (task id %d), but there is another sender running for this host.",
+        netdata_log_error("STREAM %s [send]: thread created (task id %d), but there is another sender running for this host.",
               rrdhost_hostname(s->host), gettid());
         return NULL;
     }
 
     rrdpush_initialize_ssl_ctx(s->host);
 
-    info("STREAM %s [send]: thread created (task id %d)", rrdhost_hostname(s->host), gettid());
+    netdata_log_info("STREAM %s [send]: thread created (task id %d)", rrdhost_hostname(s->host), gettid());
 
     s->timeout = (int)appconfig_get_number(
         &stream_config, CONFIG_SECTION_STREAM, "timeout seconds", 600);
@@ -1385,6 +1618,9 @@ void *rrdpush_sender_thread(void *ptr) {
         "initial clock resync iterations",
         remote_clock_resync_iterations); // TODO: REMOVE FOR SLEW / GAPFILLING
 
+    s->parent_using_h2o = appconfig_get_boolean(
+        &stream_config, CONFIG_SECTION_STREAM, "parent using h2o", false);
+
     // initialize rrdpush globals
     rrdhost_flag_clear(s->host, RRDHOST_FLAG_RRDPUSH_SENDER_READY_4_METRICS);
     rrdhost_flag_clear(s->host, RRDHOST_FLAG_RRDPUSH_SENDER_CONNECTED);
@@ -1397,7 +1633,7 @@ void *rrdpush_sender_thread(void *ptr) {
         pipe_buffer_size = 10 * 1024;
 
     if(!rrdpush_sender_pipe_close(s->host, s->rrdpush_sender_pipe, true)) {
-        error("STREAM %s [send]: cannot create inter-thread communication pipe. Disabling streaming.",
+        netdata_log_error("STREAM %s [send]: cannot create inter-thread communication pipe. Disabling streaming.",
               rrdhost_hostname(s->host));
         return NULL;
     }
@@ -1433,12 +1669,17 @@ void *rrdpush_sender_thread(void *ptr) {
                 break;
 
             now_s = s->last_traffic_seen_t = now_monotonic_sec();
-            rrdpush_claimed_id(s->host);
+            rrdpush_send_claimed_id(s->host);
             rrdpush_send_host_labels(s->host);
+            rrdpush_send_global_functions(s->host);
+            rrdpush_send_dyncfg(s->host);
             s->replication.oldest_request_after_t = 0;
 
             rrdhost_flag_set(s->host, RRDHOST_FLAG_RRDPUSH_SENDER_READY_4_METRICS);
-            info("STREAM %s [send to %s]: enabling metrics streaming...", rrdhost_hostname(s->host), s->connected_to);
+
+            nd_log(NDLS_DAEMON, NDLP_DEBUG,
+                   "STREAM %s [send to %s]: enabling metrics streaming...",
+                   rrdhost_hostname(s->host), s->connected_to);
 
             continue;
         }
@@ -1452,19 +1693,28 @@ void *rrdpush_sender_thread(void *ptr) {
             !rrdpush_sender_replicating_charts(s)
         )) {
             worker_is_busy(WORKER_SENDER_JOB_DISCONNECT_TIMEOUT);
-            error("STREAM %s [send to %s]: could not send metrics for %d seconds - closing connection - we have sent %zu bytes on this connection via %zu send attempts.", rrdhost_hostname(s->host), s->connected_to, s->timeout, s->sent_bytes_on_this_connection, s->send_attempts);
+            netdata_log_error("STREAM %s [send to %s]: could not send metrics for %d seconds - closing connection - we have sent %zu bytes on this connection via %zu send attempts.", rrdhost_hostname(s->host), s->connected_to, s->timeout, s->sent_bytes_on_this_connection, s->send_attempts);
             rrdpush_sender_thread_close_socket(s->host);
             continue;
         }
 
-        netdata_mutex_lock(&s->mutex);
+        sender_lock(s);
         size_t outstanding = cbuffer_next_unsafe(s->buffer, NULL);
         size_t available = cbuffer_available_size_unsafe(s->buffer);
         if (unlikely(!outstanding)) {
             rrdpush_sender_pipe_clear_pending_data(s);
             rrdpush_sender_cbuffer_recreate_timed(s, now_s, true, false);
         }
-        netdata_mutex_unlock(&s->mutex);
+
+        if(s->compressor.initialized) {
+            size_t bytes_uncompressed = s->compressor.sender_locked.total_uncompressed;
+            size_t bytes_compressed = s->compressor.sender_locked.total_compressed + s->compressor.sender_locked.total_compressions * sizeof(rrdpush_signature_t);
+            NETDATA_DOUBLE ratio = 100.0 - ((NETDATA_DOUBLE)bytes_compressed * 100.0 / (NETDATA_DOUBLE)bytes_uncompressed);
+            worker_set_metric(WORKER_SENDER_JOB_BYTES_UNCOMPRESSED, (NETDATA_DOUBLE)bytes_uncompressed);
+            worker_set_metric(WORKER_SENDER_JOB_BYTES_COMPRESSED, (NETDATA_DOUBLE)bytes_compressed);
+            worker_set_metric(WORKER_SENDER_JOB_BYTES_COMPRESSION_RATIO, ratio);
+        }
+        sender_unlock(s);
 
         worker_set_metric(WORKER_SENDER_JOB_BUFFER_RATIO, (NETDATA_DOUBLE)(s->buffer->max_size - available) * 100.0 / (NETDATA_DOUBLE)s->buffer->max_size);
 
@@ -1473,7 +1723,7 @@ void *rrdpush_sender_thread(void *ptr) {
 
         if(unlikely(s->rrdpush_sender_pipe[PIPE_READ] == -1)) {
             if(!rrdpush_sender_pipe_close(s->host, s->rrdpush_sender_pipe, true)) {
-                error("STREAM %s [send]: cannot create inter-thread communication pipe. Disabling streaming.",
+                netdata_log_error("STREAM %s [send]: cannot create inter-thread communication pipe. Disabling streaming.",
                       rrdhost_hostname(s->host));
                 rrdpush_sender_thread_close_socket(s->host);
                 break;
@@ -1500,9 +1750,9 @@ void *rrdpush_sender_thread(void *ptr) {
             }
         };
 
-        int poll_rc = poll(fds, 2, 1000);
+        int poll_rc = poll(fds, 2, 50); // timeout in milliseconds
 
-        debug(D_STREAM, "STREAM: poll() finished collector=%d socket=%d (current chunk %zu bytes)...",
+        netdata_log_debug(D_STREAM, "STREAM: poll() finished collector=%d socket=%d (current chunk %zu bytes)...",
               fds[Collector].revents, fds[Socket].revents, outstanding);
 
         if(unlikely(rrdhost_sender_should_exit(s)))
@@ -1517,7 +1767,7 @@ void *rrdpush_sender_thread(void *ptr) {
         // Spurious wake-ups without error - loop again
         if (poll_rc == 0 || ((poll_rc == -1) && (errno == EAGAIN || errno == EINTR))) {
             netdata_thread_testcancel();
-            debug(D_STREAM, "Spurious wakeup");
+            netdata_log_debug(D_STREAM, "Spurious wakeup");
             now_s = now_monotonic_sec();
             continue;
         }
@@ -1525,7 +1775,7 @@ void *rrdpush_sender_thread(void *ptr) {
         // Only errors from poll() are internal, but try restarting the connection
         if(unlikely(poll_rc == -1)) {
             worker_is_busy(WORKER_SENDER_JOB_DISCONNECT_POLL_ERROR);
-            error("STREAM %s [send to %s]: failed to poll(). Closing socket.", rrdhost_hostname(s->host), s->connected_to);
+            netdata_log_error("STREAM %s [send to %s]: failed to poll(). Closing socket.", rrdhost_hostname(s->host), s->connected_to);
             rrdpush_sender_pipe_close(s->host, s->rrdpush_sender_pipe, true);
             rrdpush_sender_thread_close_socket(s->host);
             continue;
@@ -1544,10 +1794,10 @@ void *rrdpush_sender_thread(void *ptr) {
         // If the collector woke us up then empty the pipe to remove the signal
         if (fds[Collector].revents & (POLLIN|POLLPRI)) {
             worker_is_busy(WORKER_SENDER_JOB_PIPE_READ);
-            debug(D_STREAM, "STREAM: Data added to send buffer (current buffer chunk %zu bytes)...", outstanding);
+            netdata_log_debug(D_STREAM, "STREAM: Data added to send buffer (current buffer chunk %zu bytes)...", outstanding);
 
             if (read(fds[Collector].fd, thread_data->pipe_buffer, pipe_buffer_size) == -1)
-                error("STREAM %s [send to %s]: cannot read from internal pipe.", rrdhost_hostname(s->host), s->connected_to);
+                netdata_log_error("STREAM %s [send to %s]: cannot read from internal pipe.", rrdhost_hostname(s->host), s->connected_to);
         }
 
         // Read as much as possible to fill the buffer, split into full lines for execution.
@@ -1575,7 +1825,7 @@ void *rrdpush_sender_thread(void *ptr) {
 
             if(error) {
                 rrdpush_sender_pipe_close(s->host, s->rrdpush_sender_pipe, true);
-                error("STREAM %s [send to %s]: restarting internal pipe: %s.",
+                netdata_log_error("STREAM %s [send to %s]: restarting internal pipe: %s.",
                       rrdhost_hostname(s->host), s->connected_to, error);
             }
         }
@@ -1591,8 +1841,8 @@ void *rrdpush_sender_thread(void *ptr) {
                 error = "connection is invalid (POLLNVAL)";
 
             if(unlikely(error)) {
-                worker_is_busy(WORKER_SENDER_JOB_DISCONNECT_SOCKER_ERROR);
-                error("STREAM %s [send to %s]: restarting connection: %s - %zu bytes transmitted.",
+                worker_is_busy(WORKER_SENDER_JOB_DISCONNECT_SOCKET_ERROR);
+                netdata_log_error("STREAM %s [send to %s]: restarting connection: %s - %zu bytes transmitted.",
                       rrdhost_hostname(s->host), s->connected_to, error, s->sent_bytes_on_this_connection);
                 rrdpush_sender_thread_close_socket(s->host);
             }
@@ -1602,7 +1852,7 @@ void *rrdpush_sender_thread(void *ptr) {
         if(unlikely(s->flags & SENDER_FLAG_OVERFLOW)) {
             worker_is_busy(WORKER_SENDER_JOB_DISCONNECT_OVERFLOW);
             errno = 0;
-            error("STREAM %s [send to %s]: buffer full (allocated %zu bytes) after sending %zu bytes. Restarting connection",
+            netdata_log_error("STREAM %s [send to %s]: buffer full (allocated %zu bytes) after sending %zu bytes. Restarting connection",
                   rrdhost_hostname(s->host), s->connected_to, s->buffer->size, s->sent_bytes_on_this_connection);
             rrdpush_sender_thread_close_socket(s->host);
         }

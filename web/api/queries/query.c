@@ -17,6 +17,7 @@
 #include "percentile/percentile.h"
 #include "trimmed_mean/trimmed_mean.h"
 
+#define QUERY_PLAN_MIN_POINTS 10
 #define POINTS_TO_EXPAND_QUERY 5
 
 // ----------------------------------------------------------------------------
@@ -996,6 +997,10 @@ static size_t query_metric_best_tier_for_timeframe(QUERY_METRIC *qm, time_t afte
     if(unlikely(after_wanted == before_wanted || points_wanted <= 0))
         return query_metric_first_working_tier(qm);
 
+    if(points_wanted < QUERY_PLAN_MIN_POINTS)
+        // when selecting tiers, aim for a resolution of at least QUERY_PLAN_MIN_POINTS points
+        points_wanted = (before_wanted - after_wanted) > QUERY_PLAN_MIN_POINTS ? QUERY_PLAN_MIN_POINTS : before_wanted - after_wanted;
+
     time_t min_first_time_s = 0;
     time_t max_last_time_s = 0;
 
@@ -1359,10 +1364,12 @@ static bool query_plan(QUERY_ENGINE_OPS *ops, time_t after_wanted, time_t before
 
         if(!query_metric_is_valid_tier(qm, selected_tier))
             return false;
+    }
 
-        if(qm->tiers[selected_tier].db_first_time_s > before_wanted ||
-           qm->tiers[selected_tier].db_last_time_s < after_wanted)
-            return false;
+    if(qm->tiers[selected_tier].db_first_time_s > before_wanted ||
+       qm->tiers[selected_tier].db_last_time_s < after_wanted) {
+        // we don't have any data to satisfy this query
+        return false;
     }
 
     qm->plan.used = 1;
@@ -1384,9 +1391,10 @@ static bool query_plan(QUERY_ENGINE_OPS *ops, time_t after_wanted, time_t before
 
                 // find the first time of this tier
                 time_t tier_first_time_s = qm->tiers[tr].db_first_time_s;
+                time_t tier_last_time_s = qm->tiers[tr].db_last_time_s;
 
                 // can it help?
-                if (tier_first_time_s < selected_tier_first_time_s) {
+                if (tier_first_time_s < selected_tier_first_time_s && tier_first_time_s <= before_wanted && tier_last_time_s >= after_wanted) {
                     // it can help us add detail at the beginning of the query
                     QUERY_PLAN_ENTRY t = {
                         .tier = tr,
@@ -1416,12 +1424,13 @@ static bool query_plan(QUERY_ENGINE_OPS *ops, time_t after_wanted, time_t before
                     continue;
 
                 // find the last time of this tier
+                time_t tier_first_time_s = qm->tiers[tr].db_first_time_s;
                 time_t tier_last_time_s = qm->tiers[tr].db_last_time_s;
 
                 //buffer_sprintf(wb, ": EVAL BEFORE tier %d, %ld", tier, last_time_s);
 
                 // can it help?
-                if (tier_last_time_s > selected_tier_last_time_s) {
+                if (tier_last_time_s > selected_tier_last_time_s && tier_first_time_s <= before_wanted && tier_last_time_s >= after_wanted) {
                     // it can help us add detail at the end of the query
                     QUERY_PLAN_ENTRY t = {
                         .tier = tr,
@@ -1627,7 +1636,7 @@ static void rrd2rrdr_query_execute(RRDR *r, size_t dim_id_in_rrdr, QUERY_ENGINE_
                 new_point.sp.start_time_s = last1_point.sp.end_time_s;
                 new_point.sp.end_time_s   = now_end_time;
 //
-//                if(debug_this) info("QUERY: is finished() returned true");
+//                if(debug_this) netdata_log_info("QUERY: is finished() returned true");
 //
                 break;
             }
@@ -1687,7 +1696,7 @@ static void rrd2rrdr_query_execute(RRDR *r, size_t dim_id_in_rrdr, QUERY_ENGINE_
                 query_point_set_id(new_point, ops->db_total_points_read);
 
 //                if(debug_this)
-//                    info("QUERY: got point %zu, from time %ld to %ld   //   now from %ld to %ld   //   query from %ld to %ld",
+//                    netdata_log_info("QUERY: got point %zu, from time %ld to %ld   //   now from %ld to %ld   //   query from %ld to %ld",
 //                         new_point.id, new_point.start_time, new_point.end_time, now_start_time, now_end_time, after_wanted, before_wanted);
 //
                 // get the right value from the point we got
@@ -1952,7 +1961,7 @@ void rrdr_fill_tier_gap_from_smaller_tiers(RRDDIM *rd, size_t tier, time_t now_s
     if(unlikely(!t)) return;
 
     time_t latest_time_s = storage_engine_latest_time_s(t->backend, t->db_metric_handle);
-    time_t granularity = (time_t)t->tier_grouping * (time_t)rd->update_every;
+    time_t granularity = (time_t)t->tier_grouping * (time_t)rd->rrdset->update_every;
     time_t time_diff   = now_s - latest_time_s;
 
     // if the user wants only NEW backfilling, and we don't have any data
@@ -2070,95 +2079,13 @@ static void rrd2rrdr_log_request_response_metadata(RRDR *r
 }
 #endif // NETDATA_INTERNAL_CHECKS
 
-// Returns 1 if an absolute period was requested or 0 if it was a relative period
-bool rrdr_relative_window_to_absolute(time_t *after, time_t *before, time_t *now_ptr) {
-    time_t now = now_realtime_sec() - 1;
-
-    if(now_ptr)
-        *now_ptr = now;
-
-    int absolute_period_requested = -1;
-    long long after_requested, before_requested;
-
-    before_requested = *before;
-    after_requested = *after;
-
-    // allow relative for before (smaller than API_RELATIVE_TIME_MAX)
-    if(ABS(before_requested) <= API_RELATIVE_TIME_MAX) {
-        // if the user asked for a positive relative time,
-        // flip it to a negative
-        if(before_requested > 0)
-            before_requested = -before_requested;
-
-        before_requested = now + before_requested;
-        absolute_period_requested = 0;
-    }
-
-    // allow relative for after (smaller than API_RELATIVE_TIME_MAX)
-    if(ABS(after_requested) <= API_RELATIVE_TIME_MAX) {
-        if(after_requested > 0)
-            after_requested = -after_requested;
-
-        // if the user didn't give an after, use the number of points
-        // to give a sane default
-        if(after_requested == 0)
-            after_requested = -600;
-
-        // since the query engine now returns inclusive timestamps
-        // it is awkward to return 6 points when after=-5 is given
-        // so for relative queries we add 1 second, to give
-        // more predictable results to users.
-        after_requested = before_requested + after_requested + 1;
-        absolute_period_requested = 0;
-    }
-
-    if(absolute_period_requested == -1)
-        absolute_period_requested = 1;
-
-    // check if the parameters are flipped
-    if(after_requested > before_requested) {
-        long long t = before_requested;
-        before_requested = after_requested;
-        after_requested = t;
-    }
-
-    // if the query requests future data
-    // shift the query back to be in the present time
-    // (this may also happen because of the rules above)
-    if(before_requested > now) {
-        long long delta = before_requested - now;
-        before_requested -= delta;
-        after_requested  -= delta;
-    }
-
-    time_t absolute_minimum_time = now - (10 * 365 * 86400);
-    time_t absolute_maximum_time = now + (1 * 365 * 86400);
-
-    if (after_requested < absolute_minimum_time && !unittest_running)
-        after_requested = absolute_minimum_time;
-
-    if (after_requested > absolute_maximum_time && !unittest_running)
-        after_requested = absolute_maximum_time;
-
-    if (before_requested < absolute_minimum_time && !unittest_running)
-        before_requested = absolute_minimum_time;
-
-    if (before_requested > absolute_maximum_time && !unittest_running)
-        before_requested = absolute_maximum_time;
-
-    *before = before_requested;
-    *after = after_requested;
-
-    return (absolute_period_requested != 1);
-}
-
 // #define DEBUG_QUERY_LOGIC 1
 
 #ifdef DEBUG_QUERY_LOGIC
 #define query_debug_log_init() BUFFER *debug_log = buffer_create(1000)
 #define query_debug_log(args...) buffer_sprintf(debug_log, ##args)
 #define query_debug_log_fin() { \
-        info("QUERY: '%s', after:%ld, before:%ld, duration:%ld, points:%zu, res:%ld - wanted => after:%ld, before:%ld, points:%zu, group:%zu, granularity:%ld, resgroup:%ld, resdiv:" NETDATA_DOUBLE_FORMAT_AUTO " %s", qt->id, after_requested, before_requested, before_requested - after_requested, points_requested, resampling_time_requested, after_wanted, before_wanted, points_wanted, group, query_granularity, resampling_group, resampling_divisor, buffer_tostring(debug_log)); \
+        netdata_log_info("QUERY: '%s', after:%ld, before:%ld, duration:%ld, points:%zu, res:%ld - wanted => after:%ld, before:%ld, points:%zu, group:%zu, granularity:%ld, resgroup:%ld, resdiv:" NETDATA_DOUBLE_FORMAT_AUTO " %s", qt->id, after_requested, before_requested, before_requested - after_requested, points_requested, resampling_time_requested, after_wanted, before_wanted, points_wanted, group, query_granularity, resampling_group, resampling_divisor, buffer_tostring(debug_log)); \
         buffer_free(debug_log); \
         debug_log = NULL; \
     }
@@ -2278,7 +2205,7 @@ bool query_target_calculate_window(QUERY_TARGET *qt) {
     }
 
     // convert our before_wanted and after_wanted to absolute
-    rrdr_relative_window_to_absolute(&after_wanted, &before_wanted, NULL);
+    rrdr_relative_window_to_absolute_query(&after_wanted, &before_wanted, NULL, unittest_running);
     query_debug_log(":relative2absolute after %ld, before %ld", after_wanted, before_wanted);
 
     if (natural_points && (options & RRDR_OPTION_SELECTED_TIER) && tier > 0 && storage_tiers > 1) {
@@ -2516,13 +2443,6 @@ void rrdr_json_group_by_labels(BUFFER *wb, const char *key, RRDR *r, RRDR_OPTION
     buffer_json_object_close(wb); // key
 }
 
-static int group_by_label_is_space(char c) {
-    if(c == ',' || c == '|')
-        return 1;
-
-    return 0;
-}
-
 static void rrd2rrdr_set_timestamps(RRDR *r) {
     QUERY_TARGET *qt = r->internal.qt;
 
@@ -2581,7 +2501,7 @@ static void query_group_by_make_dimension_key(BUFFER *key, RRDR_GROUP_BY group_b
         }
 
         if (group_by & RRDR_GROUP_BY_LABEL) {
-            DICTIONARY *labels = rrdinstance_acquired_labels(qi->ria);
+            RRDLABELS *labels = rrdinstance_acquired_labels(qi->ria);
             for (size_t l = 0; l < qt->group_by[group_by_id].used; l++) {
                 buffer_fast_strcat(key, "|", 1);
                 rrdlabels_get_value_to_buffer_or_unset(labels, key, qt->group_by[group_by_id].label_keys[l], "[unset]");
@@ -2629,7 +2549,7 @@ static void query_group_by_make_dimension_id(BUFFER *key, RRDR_GROUP_BY group_by
         }
 
         if (group_by & RRDR_GROUP_BY_LABEL) {
-            DICTIONARY *labels = rrdinstance_acquired_labels(qi->ria);
+            RRDLABELS *labels = rrdinstance_acquired_labels(qi->ria);
             for (size_t l = 0; l < qt->group_by[group_by_id].used; l++) {
                 if (buffer_strlen(key) != 0)
                     buffer_fast_strcat(key, ",", 1);
@@ -2684,7 +2604,7 @@ static void query_group_by_make_dimension_name(BUFFER *key, RRDR_GROUP_BY group_
         }
 
         if (group_by & RRDR_GROUP_BY_LABEL) {
-            DICTIONARY *labels = rrdinstance_acquired_labels(qi->ria);
+            RRDLABELS *labels = rrdinstance_acquired_labels(qi->ria);
             for (size_t l = 0; l < qt->group_by[group_by_id].used; l++) {
                 if (buffer_strlen(key) != 0)
                     buffer_fast_strcat(key, ",", 1);
@@ -2755,9 +2675,9 @@ static RRDR *rrd2rrdr_group_by_initialize(ONEWAYALLOC *owa, QUERY_TARGET *qt) {
     for(size_t g = 0; g < MAX_QUERY_GROUP_BY_PASSES ;g++) {
         if (qt->request.group_by[g].group_by & RRDR_GROUP_BY_LABEL &&
             qt->request.group_by[g].group_by_label && *qt->request.group_by[g].group_by_label)
-            qt->group_by[g].used = quoted_strings_splitter(
+            qt->group_by[g].used = quoted_strings_splitter_query_group_by_label(
                     qt->request.group_by[g].group_by_label, qt->group_by[g].label_keys,
-                    GROUP_BY_MAX_LABEL_KEYS, group_by_label_is_space);
+                    GROUP_BY_MAX_LABEL_KEYS);
 
         if (!qt->group_by[g].used)
             qt->request.group_by[g].group_by &= ~RRDR_GROUP_BY_LABEL;
@@ -2990,11 +2910,11 @@ static RRDR *rrd2rrdr_group_by_initialize(ONEWAYALLOC *owa, QUERY_TARGET *qt) {
         }
 
         // initialize partial trimming
-        r->partial_data_trimming.max_update_every = update_every_max;
+        r->partial_data_trimming.max_update_every = update_every_max * 2;
         r->partial_data_trimming.expected_after =
                 (!query_target_aggregatable(qt) &&
-                 qt->window.before >= qt->window.now - update_every_max) ?
-                qt->window.before - update_every_max :
+                 qt->window.before >= qt->window.now - r->partial_data_trimming.max_update_every) ?
+                qt->window.before - r->partial_data_trimming.max_update_every :
                 qt->window.before;
         r->partial_data_trimming.trimmed_after = qt->window.before;
 
@@ -3146,6 +3066,8 @@ static void rrdr2rrdr_group_by_partial_trimming(RRDR *r) {
     if(unlikely(i < 0))
         return;
 
+    // internal_error(true, "Found trimmable index %zd (from 0 to %zu)", i, r->n - 1);
+
     size_t last_row_gbc = 0;
     for (; i < (ssize_t)r->n; i++) {
         size_t row_gbc = 0;
@@ -3156,8 +3078,11 @@ static void rrdr2rrdr_group_by_partial_trimming(RRDR *r) {
             row_gbc += r->gbc[ i * r->d + d ];
         }
 
-        if (unlikely(r->t[i] >= trimmable_after && row_gbc < last_row_gbc)) {
+        // internal_error(true, "GBC of index %zd is %zu", i, row_gbc);
+
+        if (unlikely(r->t[i] >= trimmable_after && (row_gbc < last_row_gbc || !row_gbc))) {
             // discard the rest of the points
+            // internal_error(true, "Discarding points %zd to %zu", i, r->n - 1);
             r->partial_data_trimming.trimmed_after = r->t[i];
             r->rows = i;
             break;
@@ -3692,12 +3617,12 @@ RRDR *rrd2rrdr(ONEWAYALLOC *owa, QUERY_TARGET *qt) {
         bool cancel = false;
         if (qt->request.interrupt_callback && qt->request.interrupt_callback(qt->request.interrupt_callback_data)) {
             cancel = true;
-            log_access("QUERY INTERRUPTED");
+            nd_log(NDLS_ACCESS, NDLP_NOTICE, "QUERY INTERRUPTED");
         }
 
         if (qt->request.timeout_ms && ((NETDATA_DOUBLE)(now_ut - qt->timings.received_ut) / 1000.0) > (NETDATA_DOUBLE)qt->request.timeout_ms) {
             cancel = true;
-            log_access("QUERY CANCELED RUNTIME EXCEEDED %0.2f ms (LIMIT %lld ms)",
+            nd_log(NDLS_ACCESS, NDLP_WARNING, "QUERY CANCELED RUNTIME EXCEEDED %0.2f ms (LIMIT %lld ms)",
                        (NETDATA_DOUBLE)(now_ut - qt->timings.received_ut) / 1000.0, (long long)qt->request.timeout_ms);
         }
 

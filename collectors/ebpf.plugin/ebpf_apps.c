@@ -35,7 +35,7 @@ void ebpf_aral_init(void)
 {
     size_t max_elements = NETDATA_EBPF_ALLOC_MAX_PID;
     if (max_elements < NETDATA_EBPF_ALLOC_MIN_ELEMENTS) {
-        error("Number of elements given is too small, adjusting it for %d", NETDATA_EBPF_ALLOC_MIN_ELEMENTS);
+        netdata_log_error("Number of elements given is too small, adjusting it for %d", NETDATA_EBPF_ALLOC_MIN_ELEMENTS);
         max_elements = NETDATA_EBPF_ALLOC_MIN_ELEMENTS;
     }
 
@@ -44,7 +44,7 @@ void ebpf_aral_init(void)
     ebpf_aral_process_stat = ebpf_allocate_pid_aral(NETDATA_EBPF_PROC_ARAL_NAME, sizeof(ebpf_process_stat_t));
 
 #ifdef NETDATA_DEV_MODE
-    info("Plugin is using ARAL with values %d", NETDATA_EBPF_ALLOC_MAX_PID);
+    netdata_log_info("Plugin is using ARAL with values %d", NETDATA_EBPF_ALLOC_MAX_PID);
 #endif
 }
 
@@ -130,16 +130,6 @@ ebpf_socket_publish_apps_t *ebpf_socket_stat_get(void)
     ebpf_socket_publish_apps_t *target = aral_mallocz(ebpf_aral_socket_pid);
     memset(target, 0, sizeof(ebpf_socket_publish_apps_t));
     return target;
-}
-
-/**
- * eBPF socket release
- *
- * @param stat Release a target after usage.
- */
-void ebpf_socket_release(ebpf_socket_publish_apps_t *stat)
-{
-    aral_freez(ebpf_aral_socket_pid, stat);
 }
 
 /*****************************************************************
@@ -375,58 +365,6 @@ int ebpf_read_hash_table(void *ep, int fd, uint32_t pid)
     return -1;
 }
 
-/**
- * Read socket statistic
- *
- * Read information from kernel ring to user ring.
- *
- * @param ep    the table with all process stats values.
- * @param fd    the file descriptor mapped from kernel
- * @param ef    a pointer for the functions mapped from dynamic library
- * @param pids  the list of pids associated to a target.
- *
- * @return
- */
-size_t read_bandwidth_statistic_using_pid_on_target(ebpf_bandwidth_t **ep, int fd, struct ebpf_pid_on_target *pids)
-{
-    size_t count = 0;
-    while (pids) {
-        uint32_t current_pid = pids->pid;
-        if (!ebpf_read_hash_table(ep[current_pid], fd, current_pid))
-            count++;
-
-        pids = pids->next;
-    }
-
-    return count;
-}
-
-/**
- * Read bandwidth statistic using hash table
- *
- * @param out                   the output tensor that will receive the information.
- * @param fd                    the file descriptor that has the data
- * @param bpf_map_lookup_elem   a pointer for the function to read the data
- * @param bpf_map_get_next_key  a pointer fo the function to read the index.
- */
-size_t read_bandwidth_statistic_using_hash_table(ebpf_bandwidth_t **out, int fd)
-{
-    size_t count = 0;
-    uint32_t key = 0;
-    uint32_t next_key = 0;
-
-    while (bpf_map_get_next_key(fd, &key, &next_key) == 0) {
-        ebpf_bandwidth_t *eps = out[next_key];
-        if (!eps) {
-            eps = callocz(1, sizeof(ebpf_process_stat_t));
-            out[next_key] = eps;
-        }
-        ebpf_read_hash_table(eps, fd, next_key);
-    }
-
-    return count;
-}
-
 /*****************************************************************
  *
  *  FUNCTIONS CALLED FROM COLLECTORS
@@ -564,6 +502,13 @@ struct ebpf_target *get_apps_groups_target(struct ebpf_target **agrt, const char
         // copy the id
         strncpyz(w->name, nid, EBPF_MAX_NAME);
 
+    strncpyz(w->clean_name, w->name, EBPF_MAX_NAME);
+    netdata_fix_chart_name(w->clean_name);
+    for (char *d = w->clean_name; *d; d++) {
+        if (*d == '.')
+            *d = '_';
+    }
+
     strncpyz(w->compare, nid, EBPF_MAX_COMPARE_NAME);
     size_t len = strlen(w->compare);
     if (w->compare[len - 1] == '*') {
@@ -652,7 +597,7 @@ int ebpf_read_apps_groups_conf(struct ebpf_target **agdt, struct ebpf_target **a
             // add this target
             struct ebpf_target *n = get_apps_groups_target(agrt, s, w, name);
             if (!n) {
-                error("Cannot create target '%s' (line %zu, word %zu)", s, line, word);
+                netdata_log_error("Cannot create target '%s' (line %zu, word %zu)", s, line, word);
                 continue;
             }
 
@@ -755,32 +700,32 @@ static inline void debug_log_dummy(void)
 static inline int managed_log(struct ebpf_pid_stat *p, uint32_t log, int status)
 {
     if (unlikely(!status)) {
-        // error("command failed log %u, errno %d", log, errno);
+        // netdata_log_error("command failed log %u, errno %d", log, errno);
 
         if (unlikely(debug_enabled || errno != ENOENT)) {
             if (unlikely(debug_enabled || !(p->log_thrown & log))) {
                 p->log_thrown |= log;
                 switch (log) {
                     case PID_LOG_IO:
-                        error(
+                        netdata_log_error(
                             "Cannot process %s/proc/%d/io (command '%s')", netdata_configured_host_prefix, p->pid,
                             p->comm);
                         break;
 
                     case PID_LOG_STATUS:
-                        error(
+                        netdata_log_error(
                             "Cannot process %s/proc/%d/status (command '%s')", netdata_configured_host_prefix, p->pid,
                             p->comm);
                         break;
 
                     case PID_LOG_CMDLINE:
-                        error(
+                        netdata_log_error(
                             "Cannot process %s/proc/%d/cmdline (command '%s')", netdata_configured_host_prefix, p->pid,
                             p->comm);
                         break;
 
                     case PID_LOG_FDS:
-                        error(
+                        netdata_log_error(
                             "Cannot process entries in %s/proc/%d/fd (command '%s')", netdata_configured_host_prefix,
                             p->pid, p->comm);
                         break;
@@ -789,14 +734,14 @@ static inline int managed_log(struct ebpf_pid_stat *p, uint32_t log, int status)
                         break;
 
                     default:
-                        error("unhandled error for pid %d, command '%s'", p->pid, p->comm);
+                        netdata_log_error("unhandled error for pid %d, command '%s'", p->pid, p->comm);
                         break;
                 }
             }
         }
         errno = 0;
     } else if (unlikely(p->log_thrown & log)) {
-        // error("unsetting log %u on pid %d", log, p->pid);
+        // netdata_log_error("unsetting log %u on pid %d", log, p->pid);
         p->log_thrown &= ~log;
     }
 
@@ -887,6 +832,7 @@ static inline int read_proc_pid_cmdline(struct ebpf_pid_stat *p)
 {
     static char cmdline[MAX_CMDLINE + 1];
 
+    int ret = 0;
     if (unlikely(!p->cmdline_filename)) {
         char filename[FILENAME_MAX + 1];
         snprintfz(filename, FILENAME_MAX, "%s/proc/%d/cmdline", netdata_configured_host_prefix, p->pid);
@@ -909,20 +855,23 @@ static inline int read_proc_pid_cmdline(struct ebpf_pid_stat *p)
             cmdline[i] = ' ';
     }
 
-    if (p->cmdline)
-        freez(p->cmdline);
-    p->cmdline = strdupz(cmdline);
-
     debug_log("Read file '%s' contents: %s", p->cmdline_filename, p->cmdline);
 
-    return 1;
+    ret = 1;
 
 cleanup:
     // copy the command to the command line
     if (p->cmdline)
         freez(p->cmdline);
     p->cmdline = strdupz(p->comm);
-    return 0;
+
+    rw_spinlock_write_lock(&ebpf_judy_pid.index.rw_spinlock);
+    netdata_ebpf_judy_pid_stats_t *pid_ptr = ebpf_get_pid_from_judy_unsafe(&ebpf_judy_pid.index.JudyLArray, p->pid);
+    if (pid_ptr)
+        pid_ptr->cmdline = p->cmdline;
+    rw_spinlock_write_unlock(&ebpf_judy_pid.index.rw_spinlock);
+
+    return ret;
 }
 
 /**
@@ -1005,7 +954,7 @@ static inline int read_proc_pid_stat(struct ebpf_pid_stat *p, void *ptr)
 static inline int collect_data_for_pid(pid_t pid, void *ptr)
 {
     if (unlikely(pid < 0 || pid > pid_max)) {
-        error("Invalid pid %d read (expected %d to %d). Ignoring process.", pid, 0, pid_max);
+        netdata_log_error("Invalid pid %d read (expected %d to %d). Ignoring process.", pid, 0, pid_max);
         return 0;
     }
 
@@ -1020,7 +969,7 @@ static inline int collect_data_for_pid(pid_t pid, void *ptr)
 
     // check its parent pid
     if (unlikely(p->ppid < 0 || p->ppid > pid_max)) {
-        error("Pid %d (command '%s') states invalid parent pid %d. Using 0.", pid, p->comm, p->ppid);
+        netdata_log_error("Pid %d (command '%s') states invalid parent pid %d. Using 0.", pid, p->comm, p->ppid);
         p->ppid = 0;
     }
 
@@ -1220,7 +1169,7 @@ static inline void del_pid_entry(pid_t pid)
     struct ebpf_pid_stat *p = ebpf_all_pids[pid];
 
     if (unlikely(!p)) {
-        error("attempted to free pid %d that is not allocated.", pid);
+        netdata_log_error("attempted to free pid %d that is not allocated.", pid);
         return;
     }
 
@@ -1238,6 +1187,24 @@ static inline void del_pid_entry(pid_t pid)
     freez(p->status_filename);
     freez(p->io_filename);
     freez(p->cmdline_filename);
+
+    rw_spinlock_write_lock(&ebpf_judy_pid.index.rw_spinlock);
+    netdata_ebpf_judy_pid_stats_t *pid_ptr = ebpf_get_pid_from_judy_unsafe(&ebpf_judy_pid.index.JudyLArray, p->pid);
+    if (pid_ptr) {
+        if (pid_ptr->socket_stats.JudyLArray) {
+            Word_t local_socket = 0;
+            Pvoid_t *socket_value;
+            bool first_socket = true;
+            while ((socket_value = JudyLFirstThenNext(pid_ptr->socket_stats.JudyLArray, &local_socket, &first_socket))) {
+                netdata_socket_plus_t *socket_clean = *socket_value;
+                aral_freez(aral_socket_table, socket_clean);
+            }
+            JudyLFreeArray(&pid_ptr->socket_stats.JudyLArray, PJE0);
+        }
+        JudyLDel(&ebpf_judy_pid.index.JudyLArray, p->pid, PJE0);
+    }
+    rw_spinlock_write_unlock(&ebpf_judy_pid.index.rw_spinlock);
+
     freez(p->cmdline);
     ebpf_pid_stat_release(p);
 
@@ -1279,12 +1246,6 @@ int get_pid_comm(pid_t pid, size_t n, char *dest)
  */
 void cleanup_variables_from_other_threads(uint32_t pid)
 {
-    // Clean socket structures
-    if (socket_bandwidth_curr) {
-        ebpf_socket_release(socket_bandwidth_curr[pid]);
-        socket_bandwidth_curr[pid] = NULL;
-    }
-
     // Clean cachestat structure
     if (cachestat_pid) {
         ebpf_cachestat_release(cachestat_pid[pid]);
@@ -1338,8 +1299,10 @@ void cleanup_exited_pids()
             p = p->next;
 
             // Clean process structure
-            ebpf_process_stat_release(global_process_stats[r]);
-            global_process_stats[r] = NULL;
+            if (global_process_stats) {
+                ebpf_process_stat_release(global_process_stats[r]);
+                global_process_stats[r] = NULL;
+            }
 
             cleanup_variables_from_other_threads(r);
 
@@ -1403,7 +1366,7 @@ static inline void aggregate_pid_on_target(struct ebpf_target *w, struct ebpf_pi
     }
 
     if (unlikely(!w)) {
-        error("pid %d %s was left without a target!", p->pid, p->comm);
+        netdata_log_error("pid %d %s was left without a target!", p->pid, p->comm);
         return;
     }
 
@@ -1471,36 +1434,40 @@ void collect_data_for_all_processes(int tbl_pid_stats_fd, int maps_per_core)
     uint32_t key;
     pids = ebpf_root_of_pids; // global list of all processes running
     // while (bpf_map_get_next_key(tbl_pid_stats_fd, &key, &next_key) == 0) {
-    size_t length =  sizeof(ebpf_process_stat_t);
-    if (maps_per_core)
-        length *= ebpf_nprocs;
 
-    while (pids) {
-        key = pids->pid;
-        ebpf_process_stat_t *w = global_process_stats[key];
-        if (!w) {
-            w = ebpf_process_stat_get();
-            global_process_stats[key] = w;
-        }
+    if (tbl_pid_stats_fd != -1) {
+        size_t length =  sizeof(ebpf_process_stat_t);
+        if (maps_per_core)
+            length *= ebpf_nprocs;
 
-        if (bpf_map_lookup_elem(tbl_pid_stats_fd, &key, process_stat_vector)) {
-            // Clean Process structures
-            ebpf_process_stat_release(w);
-            global_process_stats[key] = NULL;
+        while (pids) {
+            key = pids->pid;
 
-            cleanup_variables_from_other_threads(key);
+            ebpf_process_stat_t *w = global_process_stats[key];
+            if (!w) {
+                w = ebpf_process_stat_get();
+                global_process_stats[key] = w;
+            }
+
+            if (bpf_map_lookup_elem(tbl_pid_stats_fd, &key, process_stat_vector)) {
+                // Clean Process structures
+                ebpf_process_stat_release(w);
+                global_process_stats[key] = NULL;
+
+                cleanup_variables_from_other_threads(key);
+
+                pids = pids->next;
+                continue;
+            }
+
+            ebpf_process_apps_accumulator(process_stat_vector, maps_per_core);
+
+            memcpy(w, process_stat_vector, sizeof(ebpf_process_stat_t));
+
+            memset(process_stat_vector, 0, length);
 
             pids = pids->next;
-            continue;
         }
-
-        ebpf_process_apps_accumulator(process_stat_vector, maps_per_core);
-
-        memcpy(w, process_stat_vector, sizeof(ebpf_process_stat_t));
-
-        memset(process_stat_vector, 0, length);
-
-        pids = pids->next;
     }
 
     link_all_processes_to_their_parents();

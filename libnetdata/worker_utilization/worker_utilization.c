@@ -50,13 +50,16 @@ struct workers_workname {                           // this is what we add to Ju
 };
 
 static struct workers_globals {
+    bool enabled;
+
     SPINLOCK spinlock;
     Pvoid_t worknames_JudyHS;
     size_t memory;
 
 } workers_globals = {                               // workers globals, the base of all worknames
-        .spinlock = NETDATA_SPINLOCK_INITIALIZER,   // a lock for the worknames index
-        .worknames_JudyHS = NULL,                   // the worknames index
+    .enabled = false,
+    .spinlock = NETDATA_SPINLOCK_INITIALIZER,   // a lock for the worknames index
+    .worknames_JudyHS = NULL,                   // the worknames index
 };
 
 static __thread struct worker *worker = NULL; // the current thread worker
@@ -69,16 +72,24 @@ static inline usec_t worker_now_monotonic_usec(void) {
 #endif
 }
 
+void workers_utilization_enable(void) {
+    workers_globals.enabled = true;
+}
+
 size_t workers_allocated_memory(void) {
-    netdata_spinlock_lock(&workers_globals.spinlock);
+    if(!workers_globals.enabled)
+        return 0;
+
+    spinlock_lock(&workers_globals.spinlock);
     size_t memory = workers_globals.memory;
-    netdata_spinlock_unlock(&workers_globals.spinlock);
+    spinlock_unlock(&workers_globals.spinlock);
 
     return memory;
 }
 
 void worker_register(const char *name) {
-    if(unlikely(worker)) return;
+    if(unlikely(worker || !workers_globals.enabled))
+        return;
 
     worker = callocz(1, sizeof(struct worker));
     worker->pid = gettid();
@@ -91,7 +102,7 @@ void worker_register(const char *name) {
     worker->last_action = WORKER_IDLE;
 
     size_t name_size = strlen(name) + 1;
-    netdata_spinlock_lock(&workers_globals.spinlock);
+    spinlock_lock(&workers_globals.spinlock);
 
     workers_globals.memory += sizeof(struct worker) + strlen(worker->tag) + 1 + strlen(worker->workname) + 1;
 
@@ -100,25 +111,25 @@ void worker_register(const char *name) {
     struct workers_workname *workname = *PValue;
     if(!workname) {
         workname = mallocz(sizeof(struct workers_workname));
-        netdata_spinlock_init(&workname->spinlock);
+        spinlock_init(&workname->spinlock);
         workname->base = NULL;
         *PValue = workname;
 
         workers_globals.memory += sizeof(struct workers_workname) + JUDYHS_INDEX_SIZE_ESTIMATE(name_size);
     }
 
-    netdata_spinlock_lock(&workname->spinlock);
+    spinlock_lock(&workname->spinlock);
     DOUBLE_LINKED_LIST_APPEND_ITEM_UNSAFE(workname->base, worker, prev, next);
-    netdata_spinlock_unlock(&workname->spinlock);
+    spinlock_unlock(&workname->spinlock);
 
-    netdata_spinlock_unlock(&workers_globals.spinlock);
+    spinlock_unlock(&workers_globals.spinlock);
 }
 
 void worker_register_job_custom_metric(size_t job_id, const char *name, const char *units, WORKER_METRIC_TYPE type) {
     if(unlikely(!worker)) return;
 
     if(unlikely(job_id >= WORKER_UTILIZATION_MAX_JOB_TYPES)) {
-        error("WORKER_UTILIZATION: job_id %zu is too big. Max is %zu", job_id, (size_t)(WORKER_UTILIZATION_MAX_JOB_TYPES - 1));
+        netdata_log_error("WORKER_UTILIZATION: job_id %zu is too big. Max is %zu", job_id, (size_t)(WORKER_UTILIZATION_MAX_JOB_TYPES - 1));
         return;
     }
 
@@ -127,7 +138,7 @@ void worker_register_job_custom_metric(size_t job_id, const char *name, const ch
 
     if(worker->per_job_type[job_id].name) {
         if(strcmp(string2str(worker->per_job_type[job_id].name), name) != 0 || worker->per_job_type[job_id].type != type || strcmp(string2str(worker->per_job_type[job_id].units), units) != 0)
-            error("WORKER_UTILIZATION: duplicate job registration: worker '%s' job id %zu is '%s', ignoring the later '%s'", worker->workname, job_id, string2str(worker->per_job_type[job_id].name), name);
+            netdata_log_error("WORKER_UTILIZATION: duplicate job registration: worker '%s' job id %zu is '%s', ignoring the later '%s'", worker->workname, job_id, string2str(worker->per_job_type[job_id].name), name);
         return;
     }
 
@@ -144,13 +155,13 @@ void worker_unregister(void) {
     if(unlikely(!worker)) return;
 
     size_t workname_size = strlen(worker->workname) + 1;
-    netdata_spinlock_lock(&workers_globals.spinlock);
+    spinlock_lock(&workers_globals.spinlock);
     Pvoid_t *PValue = JudyHSGet(workers_globals.worknames_JudyHS, (void *)worker->workname, workname_size);
     if(PValue) {
         struct workers_workname *workname = *PValue;
-        netdata_spinlock_lock(&workname->spinlock);
+        spinlock_lock(&workname->spinlock);
         DOUBLE_LINKED_LIST_REMOVE_ITEM_UNSAFE(workname->base, worker, prev, next);
-        netdata_spinlock_unlock(&workname->spinlock);
+        spinlock_unlock(&workname->spinlock);
 
         if(!workname->base) {
             JudyHSDel(&workers_globals.worknames_JudyHS, (void *) worker->workname, workname_size, PJE0);
@@ -159,7 +170,7 @@ void worker_unregister(void) {
         }
     }
     workers_globals.memory -= sizeof(struct worker) + strlen(worker->tag) + 1 + strlen(worker->workname) + 1;
-    netdata_spinlock_unlock(&workers_globals.spinlock);
+    spinlock_unlock(&workers_globals.spinlock);
 
     for(int i  = 0; i < WORKER_UTILIZATION_MAX_JOB_TYPES ;i++) {
         string_freez(worker->per_job_type[i].name);
@@ -213,6 +224,7 @@ void worker_is_busy(size_t job_id) {
 
 void worker_set_metric(size_t job_id, NETDATA_DOUBLE value) {
     if(unlikely(!worker)) return;
+
     if(unlikely(job_id >= WORKER_UTILIZATION_MAX_JOB_TYPES))
         return;
 
@@ -247,7 +259,10 @@ void workers_foreach(const char *name, void (*callback)(
                                                , NETDATA_DOUBLE *job_custom_values
                                                )
                                                , void *data) {
-    netdata_spinlock_lock(&workers_globals.spinlock);
+    if(!workers_globals.enabled)
+        return;
+
+    spinlock_lock(&workers_globals.spinlock);
     usec_t busy_time, delta;
     size_t i, jobs_started, jobs_running;
 
@@ -256,12 +271,12 @@ void workers_foreach(const char *name, void (*callback)(
     Pvoid_t *PValue = JudyHSGet(workers_globals.worknames_JudyHS, (void *)name, workname_size);
     if(PValue) {
         workname = *PValue;
-        netdata_spinlock_lock(&workname->spinlock);
+        spinlock_lock(&workname->spinlock);
     }
     else
         workname = NULL;
 
-    netdata_spinlock_unlock(&workers_globals.spinlock);
+    spinlock_unlock(&workers_globals.spinlock);
 
     if(!workname)
         return;
@@ -379,5 +394,5 @@ void workers_foreach(const char *name, void (*callback)(
                  );
     }
 
-    netdata_spinlock_unlock(&workname->spinlock);
+    spinlock_unlock(&workname->spinlock);
 }

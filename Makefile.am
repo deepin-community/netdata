@@ -84,7 +84,7 @@ dist_noinst_DATA = \
     packaging/protobuf.version \
     packaging/version \
     database/engine/journalfile_v2.ksy.in \
-    httpd/h2o \
+    web/server/h2o/libh2o \
     $(NULL)
 
 # until integrated within build
@@ -114,6 +114,7 @@ SUBDIRS += \
     web \
     claim \
     spawn \
+    logsmanagement \
     $(NULL)
 
 AM_CFLAGS = \
@@ -128,6 +129,8 @@ AM_CFLAGS = \
     $(OPTIONAL_CUPS_CFLAGS) \
     $(OPTIONAL_XENSTAT_CFLAGS) \
     $(OPTIONAL_BPF_CFLAGS) \
+    $(OPTIONAL_SYSTEMD_CFLAGS) \
+    $(OPTIONAL_GTEST_CFLAGS) \
     $(NULL)
 
 sbin_PROGRAMS =
@@ -144,16 +147,28 @@ LIBNETDATA_FILES = \
     libnetdata/avl/avl.h \
     libnetdata/buffer/buffer.c \
     libnetdata/buffer/buffer.h \
+    libnetdata/buffered_reader/buffered_reader.c \
+    libnetdata/buffered_reader/buffered_reader.h \
     libnetdata/circular_buffer/circular_buffer.c \
     libnetdata/circular_buffer/circular_buffer.h \
     libnetdata/clocks/clocks.c \
     libnetdata/clocks/clocks.h \
     libnetdata/completion/completion.c \
     libnetdata/completion/completion.h \
+    libnetdata/datetime/iso8601.c \
+    libnetdata/datetime/iso8601.h \
+    libnetdata/datetime/rfc3339.c \
+    libnetdata/datetime/rfc3339.h \
+    libnetdata/datetime/rfc7231.c \
+    libnetdata/datetime/rfc7231.h \
     libnetdata/dictionary/dictionary.c \
     libnetdata/dictionary/dictionary.h \
     libnetdata/eval/eval.c \
     libnetdata/eval/eval.h \
+    libnetdata/facets/facets.c \
+    libnetdata/facets/facets.h \
+    libnetdata/functions_evloop/functions_evloop.c \
+    libnetdata/functions_evloop/functions_evloop.h \
     libnetdata/gorilla/gorilla.h \
     libnetdata/gorilla/gorilla.cc \
     libnetdata/inlined.h \
@@ -162,20 +177,23 @@ LIBNETDATA_FILES = \
     libnetdata/libnetdata.c \
     libnetdata/libnetdata.h \
     libnetdata/required_dummies.h \
+    libnetdata/line_splitter/line_splitter.c \
+    libnetdata/line_splitter/line_splitter.h \
     libnetdata/locks/locks.c \
     libnetdata/locks/locks.h \
+    libnetdata/log/journal.c \
+    libnetdata/log/journal.h \
     libnetdata/log/log.c \
     libnetdata/log/log.h \
     libnetdata/onewayalloc/onewayalloc.c \
     libnetdata/onewayalloc/onewayalloc.h \
-    libnetdata/parser/parser.c \
-    libnetdata/parser/parser.h \
     libnetdata/popen/popen.c \
     libnetdata/popen/popen.h \
     libnetdata/procfile/procfile.c \
     libnetdata/procfile/procfile.h \
     libnetdata/os.c \
     libnetdata/os.h \
+    libnetdata/endian.h \
     libnetdata/simple_pattern/simple_pattern.c \
     libnetdata/simple_pattern/simple_pattern.h \
     libnetdata/socket/socket.c \
@@ -192,6 +210,8 @@ LIBNETDATA_FILES = \
     libnetdata/threads/threads.h \
     libnetdata/url/url.c \
     libnetdata/url/url.h \
+    libnetdata/uuid/uuid.c \
+    libnetdata/uuid/uuid.h \
     libnetdata/json/json.c \
     libnetdata/json/json.h \
     libnetdata/json/jsmn.c \
@@ -201,7 +221,11 @@ LIBNETDATA_FILES = \
     libnetdata/string/utf8.h \
     libnetdata/worker_utilization/worker_utilization.c \
     libnetdata/worker_utilization/worker_utilization.h \
+    libnetdata/xxhash.h \
     libnetdata/http/http_defs.h \
+    libnetdata/dyn_conf/dyn_conf.c \
+    libnetdata/dyn_conf/dyn_conf.h \
+    libnetdata/simple_hashtable.h \
     $(NULL)
 
 if ENABLE_PLUGIN_EBPF
@@ -221,6 +245,7 @@ DEBUGFS_PLUGIN_FILES = \
     collectors/debugfs.plugin/debugfs_plugin.h \
     collectors/debugfs.plugin/debugfs_extfrag.c \
     collectors/debugfs.plugin/debugfs_zswap.c \
+    collectors/debugfs.plugin/sys_devices_virtual_powercap.c \
     $(LIBNETDATA_FILES) \
     $(NULL)
 
@@ -274,12 +299,21 @@ IDLEJITTER_PLUGIN_FILES = \
     $(NULL)
 
 CGROUPS_PLUGIN_FILES = \
+    collectors/cgroups.plugin/cgroup-internals.h \
+    collectors/cgroups.plugin/cgroup-discovery.c \
+    collectors/cgroups.plugin/cgroup-charts.c \
+    collectors/cgroups.plugin/cgroup-top.c \
     collectors/cgroups.plugin/sys_fs_cgroup.c \
     collectors/cgroups.plugin/sys_fs_cgroup.h \
     $(NULL)
 
 CGROUP_NETWORK_FILES = \
     collectors/cgroups.plugin/cgroup-network.c \
+    $(LIBNETDATA_FILES) \
+    $(NULL)
+
+LOCAL_LISTENERS_FILES = \
+    collectors/plugins.d/local_listeners.c \
     $(LIBNETDATA_FILES) \
     $(NULL)
 
@@ -294,6 +328,85 @@ TIMEX_PLUGIN_FILES = \
 FREEIPMI_PLUGIN_FILES = \
     collectors/freeipmi.plugin/freeipmi_plugin.c \
     $(LIBNETDATA_FILES) \
+    $(NULL)
+
+SYSTEMD_JOURNAL_PLUGIN_FILES = \
+    collectors/systemd-journal.plugin/systemd-internals.h \
+    collectors/systemd-journal.plugin/systemd-main.c \
+    collectors/systemd-journal.plugin/systemd-units.c \
+    collectors/systemd-journal.plugin/systemd-journal.c \
+    collectors/systemd-journal.plugin/systemd-journal-watcher.c \
+    collectors/systemd-journal.plugin/systemd-journal-annotations.c \
+    collectors/systemd-journal.plugin/systemd-journal-files.c \
+    collectors/systemd-journal.plugin/systemd-journal-fstat.c \
+    $(LIBNETDATA_FILES) \
+    $(NULL)
+
+SYSTEMD_CAT_NATIVE_FILES = \
+    libnetdata/log/systemd-cat-native.c \
+    libnetdata/log/systemd-cat-native.h \
+    $(LIBNETDATA_FILES) \
+    $(NULL)
+
+LOG2JOURNAL_FILES = \
+    collectors/log2journal/log2journal.h \
+    collectors/log2journal/log2journal.c \
+    collectors/log2journal/log2journal-help.c \
+    collectors/log2journal/log2journal-yaml.c \
+    collectors/log2journal/log2journal-json.c \
+    collectors/log2journal/log2journal-logfmt.c \
+    collectors/log2journal/log2journal-pcre2.c \
+    collectors/log2journal/log2journal-params.c \
+    collectors/log2journal/log2journal-inject.c \
+    collectors/log2journal/log2journal-pattern.c \
+    collectors/log2journal/log2journal-replace.c \
+    collectors/log2journal/log2journal-rename.c \
+    collectors/log2journal/log2journal-rewrite.c \
+    $(NULL)
+
+
+LOGSMANAGEMENT_FILES = \
+    logsmanagement/circular_buffer.c \
+    logsmanagement/circular_buffer.h \
+    logsmanagement/db_api.c \
+    logsmanagement/db_api.h \
+    logsmanagement/defaults.h \
+    logsmanagement/file_info.h \
+    logsmanagement/flb_plugin.c \
+    logsmanagement/flb_plugin.h \
+    logsmanagement/functions.c \
+    logsmanagement/functions.h \
+    logsmanagement/helper.h \
+    logsmanagement/logsmanag_config.c \
+    logsmanagement/logsmanag_config.h \
+    logsmanagement/logsmanagement.c \
+    logsmanagement/parser.c \
+    logsmanagement/parser.h \
+    logsmanagement/query.c \
+    logsmanagement/query.h \
+    logsmanagement/rrd_api/rrd_api_docker_ev.c \
+    logsmanagement/rrd_api/rrd_api_docker_ev.h \
+    logsmanagement/rrd_api/rrd_api_generic.c \
+    logsmanagement/rrd_api/rrd_api_generic.h \
+    logsmanagement/rrd_api/rrd_api_kernel.c \
+    logsmanagement/rrd_api/rrd_api_kernel.h \
+    logsmanagement/rrd_api/rrd_api_mqtt.c \
+    logsmanagement/rrd_api/rrd_api_mqtt.h \
+    logsmanagement/rrd_api/rrd_api_stats.c \
+    logsmanagement/rrd_api/rrd_api_stats.h \
+    logsmanagement/rrd_api/rrd_api_systemd.c \
+    logsmanagement/rrd_api/rrd_api_systemd.h \
+    logsmanagement/rrd_api/rrd_api_web_log.c \
+    logsmanagement/rrd_api/rrd_api_web_log.h \
+    logsmanagement/rrd_api/rrd_api.h \
+    database/sqlite/sqlite3.c \
+    database/sqlite/sqlite3.h \
+    $(LIBNETDATA_FILES) \
+    $(NULL)
+
+LOGSMANAGEMENT_TESTS_FILES = \
+    logsmanagement/unit_test/unit_test.c \
+    logsmanagement/unit_test/unit_test.h \
     $(NULL)
 
 CUPS_PLUGIN_FILES = \
@@ -362,6 +475,8 @@ EBPF_PLUGIN_FILES = \
     collectors/ebpf.plugin/ebpf_cgroup.h \
     collectors/ebpf.plugin/ebpf_unittest.c \
     collectors/ebpf.plugin/ebpf_unittest.h \
+    collectors/ebpf.plugin/ebpf_functions.c \
+    collectors/ebpf.plugin/ebpf_functions.h \
     $(LIBNETDATA_FILES) \
     $(NULL)
 
@@ -396,16 +511,23 @@ PROC_PLUGIN_FILES = \
     collectors/proc.plugin/zfs_common.h \
     collectors/proc.plugin/proc_spl_kstat_zfs.c \
     collectors/proc.plugin/proc_stat.c \
+    collectors/proc.plugin/proc_sys_fs_file_nr.c \
     collectors/proc.plugin/proc_sys_kernel_random_entropy_avail.c \
     collectors/proc.plugin/proc_vmstat.c \
     collectors/proc.plugin/proc_uptime.c \
     collectors/proc.plugin/sys_kernel_mm_ksm.c \
     collectors/proc.plugin/sys_block_zram.c \
     collectors/proc.plugin/sys_devices_system_edac_mc.c \
+    collectors/proc.plugin/sys_devices_pci_aer.c \
     collectors/proc.plugin/sys_devices_system_node.c \
     collectors/proc.plugin/sys_fs_btrfs.c \
     collectors/proc.plugin/sys_class_power_supply.c \
     collectors/proc.plugin/sys_class_infiniband.c \
+    collectors/proc.plugin/sys_class_drm.c \
+    $(NULL)
+
+PROFILE_PLUGIN_FILES = \
+    collectors/profile.plugin/plugin_profile.cc \
     $(NULL)
 
 TC_PLUGIN_FILES = \
@@ -425,6 +547,7 @@ PLUGINSD_PLUGIN_FILES = \
     collectors/plugins.d/plugins_d.h \
     collectors/plugins.d/pluginsd_parser.c \
     collectors/plugins.d/pluginsd_parser.h \
+    collectors/plugins.d/gperf-hashtable.h \
     $(NULL)
 
 RRD_PLUGIN_FILES = \
@@ -449,6 +572,7 @@ RRD_PLUGIN_FILES = \
     database/rrdfamily.c \
     database/rrdhost.c \
     database/rrdlabels.c \
+    database/rrdlabels.h \
     database/rrd.c \
     database/rrd.h \
     database/rrdset.c \
@@ -480,6 +604,9 @@ RRD_PLUGIN_FILES = \
     database/sqlite/sqlite_aclk_alert.h \
     database/sqlite/sqlite3.c \
     database/sqlite/sqlite3.h \
+    database/sqlite/sqlite3recover.c \
+    database/sqlite/sqlite3recover.h \
+    database/sqlite/dbdata.c \
     database/KolmogorovSmirnovDist.c \
     database/KolmogorovSmirnovDist.h \
     $(NULL)
@@ -549,10 +676,14 @@ if ENABLE_DBENGINE
         database/engine/cache.h \
         database/engine/metric.c \
         database/engine/metric.h \
+        database/engine/page.c \
+        database/engine/page.h \
+        database/engine/page_test.cc \
+        database/engine/page_test.h \
         database/engine/pdc.c \
         database/engine/pdc.h \
         $(NULL)
-    
+
     RRD_PLUGIN_KSY_BUILTFILES = \
         database/engine/journalfile_v2.ksy \
         database/engine/journalfile_v2_virtmemb.ksy \
@@ -575,6 +706,8 @@ API_PLUGIN_FILES = \
     web/api/exporters/allmetrics.h \
     web/api/exporters/shell/allmetrics_shell.c \
     web/api/exporters/shell/allmetrics_shell.h \
+    web/api/ilove/ilove.c \
+    web/api/ilove/ilove.h \
     web/api/queries/average/average.c \
     web/api/queries/average/average.h \
     web/api/queries/countif/countif.c \
@@ -634,11 +767,21 @@ API_PLUGIN_FILES = \
 STREAMING_PLUGIN_FILES = \
     streaming/rrdpush.c \
     streaming/compression.c \
+    streaming/compression.h \
+    streaming/compression_brotli.c \
+    streaming/compression_brotli.h \
+    streaming/compression_gzip.c \
+    streaming/compression_gzip.h \
+    streaming/compression_lz4.c \
+    streaming/compression_lz4.h \
+    streaming/compression_zstd.c \
+    streaming/compression_zstd.h \
     streaming/sender.c \
     streaming/receiver.c \
     streaming/replication.h \
     streaming/replication.c \
     streaming/rrdpush.h \
+    streaming/common.h \
     $(NULL)
 
 REGISTRY_PLUGIN_FILES = \
@@ -653,8 +796,6 @@ REGISTRY_PLUGIN_FILES = \
     registry/registry_machine.h \
     registry/registry_person.c \
     registry/registry_person.h \
-    registry/registry_url.c \
-    registry/registry_url.h \
     $(NULL)
 
 STATSD_PLUGIN_FILES = \
@@ -681,8 +822,6 @@ CLAIM_FILES = \
 
 if ENABLE_ACLK
 ACLK_FILES = \
-    aclk/aclk_util.c \
-    aclk/aclk_util.h \
     aclk/aclk_stats.c \
     aclk/aclk_stats.h \
     aclk/aclk_query.c \
@@ -695,8 +834,6 @@ ACLK_FILES = \
     aclk/aclk_tx_msgs.h \
     aclk/aclk_rx_msgs.c \
     aclk/aclk_rx_msgs.h \
-    aclk/https_client.c \
-    aclk/https_client.h \
     aclk/aclk_alarm_api.c \
     aclk/aclk_alarm_api.h \
     aclk/aclk_contexts_api.c \
@@ -744,15 +881,9 @@ libmqttwebsockets_a_SOURCES = \
     mqtt_websockets/src/common_public.c \
     mqtt_websockets/src/include/common_public.h \
     mqtt_websockets/src/include/common_internal.h \
-    mqtt_websockets/c-rbuf/src/ringbuffer.c \
-    mqtt_websockets/c-rbuf/include/ringbuffer.h \
-    mqtt_websockets/c-rbuf/src/ringbuffer_internal.h \
-    mqtt_websockets/c_rhash/src/c_rhash.c \
-    mqtt_websockets/c_rhash/include/c_rhash.h \
-    mqtt_websockets/c_rhash/src/c_rhash_internal.h \
     $(NULL)
 
-libmqttwebsockets_a_CFLAGS = $(CFLAGS) -DMQTT_WSS_CUSTOM_ALLOC -DRBUF_CUSTOM_MALLOC -DMQTT_WSS_CPUSTATS -I$(srcdir)/aclk/helpers -I$(srcdir)/mqtt_websockets/c_rhash/include
+libmqttwebsockets_a_CFLAGS = $(CFLAGS) -DMQTT_WSS_CUSTOM_ALLOC -DMQTT_WSS_CPUSTATS -I$(srcdir)/aclk/helpers -I$(srcdir)/mqtt_websockets/c_rhash/include
 
 if MQTT_WSS_DEBUG
 libmqttwebsockets_a_CFLAGS += -DMQTT_WSS_DEBUG
@@ -858,7 +989,24 @@ ACLK_ALWAYS_BUILD_FILES = \
     aclk/aclk.h \
     aclk/aclk_capas.c \
     aclk/aclk_capas.h \
+    aclk/aclk_util.c \
+    aclk/aclk_util.h \
+    aclk/https_client.c \
+    aclk/https_client.h \
     $(NULL)
+
+noinst_LIBRARIES += libcrutils.a
+
+libcrutils_a_SOURCES = \
+    mqtt_websockets/c-rbuf/src/ringbuffer.c \
+    mqtt_websockets/c-rbuf/include/ringbuffer.h \
+    mqtt_websockets/c-rbuf/src/ringbuffer_internal.h \
+    mqtt_websockets/c_rhash/src/c_rhash.c \
+    mqtt_websockets/c_rhash/include/c_rhash.h \
+    mqtt_websockets/c_rhash/src/c_rhash_internal.h \
+    $(NULL)
+
+libcrutils_a_CFLAGS = $(CFLAGS) -DRBUF_CUSTOM_MALLOC -I$(srcdir)/aclk/helpers -I$(abs_top_srcdir)/mqtt_websockets/c-rbuf/include -I$(srcdir)/mqtt_websockets/c_rhash/include
 
 SPAWN_PLUGIN_FILES = \
     spawn/spawn.c \
@@ -936,124 +1084,130 @@ DAEMON_FILES = \
     daemon/static_threads.c \
     daemon/commands.c \
     daemon/commands.h \
+    daemon/pipename.c \
+    daemon/pipename.h \
     daemon/unit_test.c \
     daemon/unit_test.h \
     $(NULL)
 
-HTTPD_FILES = \
-    httpd/http_server.c \
-    httpd/http_server.h \
-    httpd/h2o_utils.c \
-    httpd/h2o_utils.h \
+H2O_FILES = \
+    web/server/h2o/http_server.c \
+    web/server/h2o/http_server.h \
+    web/server/h2o/h2o_utils.c \
+    web/server/h2o/h2o_utils.h \
+    web/server/h2o/streaming.c \
+    web/server/h2o/streaming.h \
+    web/server/h2o/connlist.c \
+    web/server/h2o/connlist.h \
     $(NULL)
 
 libh2o_a_SOURCES = \
-    httpd/h2o/deps/cloexec/cloexec.c \
-    httpd/h2o/deps/libgkc/gkc.c \
-    httpd/h2o/deps/libyrmcds/close.c \
-    httpd/h2o/deps/libyrmcds/connect.c \
-    httpd/h2o/deps/libyrmcds/recv.c \
-    httpd/h2o/deps/libyrmcds/send.c \
-    httpd/h2o/deps/libyrmcds/send_text.c \
-    httpd/h2o/deps/libyrmcds/socket.c \
-    httpd/h2o/deps/libyrmcds/strerror.c \
-    httpd/h2o/deps/libyrmcds/text_mode.c \
-    httpd/h2o/deps/picohttpparser/picohttpparser.c \
-    httpd/h2o/lib/common/cache.c \
-    httpd/h2o/lib/common/file.c \
-    httpd/h2o/lib/common/filecache.c \
-    httpd/h2o/lib/common/hostinfo.c \
-    httpd/h2o/lib/common/http1client.c \
-    httpd/h2o/lib/common/memcached.c \
-    httpd/h2o/lib/common/memory.c \
-    httpd/h2o/lib/common/multithread.c \
-    httpd/h2o/lib/common/serverutil.c \
-    httpd/h2o/lib/common/socket.c \
-    httpd/h2o/lib/common/socketpool.c \
-    httpd/h2o/lib/common/string.c \
-    httpd/h2o/lib/common/time.c \
-    httpd/h2o/lib/common/timeout.c \
-    httpd/h2o/lib/common/url.c \
-    httpd/h2o/lib/core/config.c \
-    httpd/h2o/lib/core/configurator.c \
-    httpd/h2o/lib/core/context.c \
-    httpd/h2o/lib/core/headers.c \
-    httpd/h2o/lib/core/logconf.c \
-    httpd/h2o/lib/core/proxy.c \
-    httpd/h2o/lib/core/request.c \
-    httpd/h2o/lib/core/token.c \
-    httpd/h2o/lib/core/util.c \
-    httpd/h2o/lib/handler/access_log.c \
-    httpd/h2o/lib/handler/chunked.c \
-    httpd/h2o/lib/handler/compress.c \
-    httpd/h2o/lib/handler/compress/gzip.c \
-    httpd/h2o/lib/handler/errordoc.c \
-    httpd/h2o/lib/handler/expires.c \
-    httpd/h2o/lib/handler/fastcgi.c \
-    httpd/h2o/lib/handler/file.c \
-    httpd/h2o/lib/handler/headers.c \
-    httpd/h2o/lib/handler/mimemap.c \
-    httpd/h2o/lib/handler/proxy.c \
-    httpd/h2o/lib/handler/redirect.c \
-    httpd/h2o/lib/handler/reproxy.c \
-    httpd/h2o/lib/handler/throttle_resp.c \
-    httpd/h2o/lib/handler/status.c \
-    httpd/h2o/lib/handler/headers_util.c \
-    httpd/h2o/lib/handler/status/events.c \
-    httpd/h2o/lib/handler/status/requests.c \
-    httpd/h2o/lib/handler/http2_debug_state.c \
-    httpd/h2o/lib/handler/status/durations.c \
-    httpd/h2o/lib/handler/configurator/access_log.c \
-    httpd/h2o/lib/handler/configurator/compress.c \
-    httpd/h2o/lib/handler/configurator/errordoc.c \
-    httpd/h2o/lib/handler/configurator/expires.c \
-    httpd/h2o/lib/handler/configurator/fastcgi.c \
-    httpd/h2o/lib/handler/configurator/file.c \
-    httpd/h2o/lib/handler/configurator/headers.c \
-    httpd/h2o/lib/handler/configurator/proxy.c \
-    httpd/h2o/lib/handler/configurator/redirect.c \
-    httpd/h2o/lib/handler/configurator/reproxy.c \
-    httpd/h2o/lib/handler/configurator/throttle_resp.c \
-    httpd/h2o/lib/handler/configurator/status.c \
-    httpd/h2o/lib/handler/configurator/http2_debug_state.c \
-    httpd/h2o/lib/handler/configurator/headers_util.c \
-    httpd/h2o/lib/http1.c \
-    httpd/h2o/lib/tunnel.c \
-    httpd/h2o/lib/http2/cache_digests.c \
-    httpd/h2o/lib/http2/casper.c \
-    httpd/h2o/lib/http2/connection.c \
-    httpd/h2o/lib/http2/frame.c \
-    httpd/h2o/lib/http2/hpack.c \
-    httpd/h2o/lib/http2/scheduler.c \
-    httpd/h2o/lib/http2/stream.c \
-    httpd/h2o/lib/http2/http2_debug_state.c \
+    web/server/h2o/libh2o/deps/cloexec/cloexec.c \
+    web/server/h2o/libh2o/deps/libgkc/gkc.c \
+    web/server/h2o/libh2o/deps/libyrmcds/close.c \
+    web/server/h2o/libh2o/deps/libyrmcds/connect.c \
+    web/server/h2o/libh2o/deps/libyrmcds/recv.c \
+    web/server/h2o/libh2o/deps/libyrmcds/send.c \
+    web/server/h2o/libh2o/deps/libyrmcds/send_text.c \
+    web/server/h2o/libh2o/deps/libyrmcds/socket.c \
+    web/server/h2o/libh2o/deps/libyrmcds/strerror.c \
+    web/server/h2o/libh2o/deps/libyrmcds/text_mode.c \
+    web/server/h2o/libh2o/deps/picohttpparser/picohttpparser.c \
+    web/server/h2o/libh2o/lib/common/cache.c \
+    web/server/h2o/libh2o/lib/common/file.c \
+    web/server/h2o/libh2o/lib/common/filecache.c \
+    web/server/h2o/libh2o/lib/common/hostinfo.c \
+    web/server/h2o/libh2o/lib/common/http1client.c \
+    web/server/h2o/libh2o/lib/common/memcached.c \
+    web/server/h2o/libh2o/lib/common/memory.c \
+    web/server/h2o/libh2o/lib/common/multithread.c \
+    web/server/h2o/libh2o/lib/common/serverutil.c \
+    web/server/h2o/libh2o/lib/common/socket.c \
+    web/server/h2o/libh2o/lib/common/socketpool.c \
+    web/server/h2o/libh2o/lib/common/string.c \
+    web/server/h2o/libh2o/lib/common/time.c \
+    web/server/h2o/libh2o/lib/common/timeout.c \
+    web/server/h2o/libh2o/lib/common/url.c \
+    web/server/h2o/libh2o/lib/core/config.c \
+    web/server/h2o/libh2o/lib/core/configurator.c \
+    web/server/h2o/libh2o/lib/core/context.c \
+    web/server/h2o/libh2o/lib/core/headers.c \
+    web/server/h2o/libh2o/lib/core/logconf.c \
+    web/server/h2o/libh2o/lib/core/proxy.c \
+    web/server/h2o/libh2o/lib/core/request.c \
+    web/server/h2o/libh2o/lib/core/token.c \
+    web/server/h2o/libh2o/lib/core/util.c \
+    web/server/h2o/libh2o/lib/handler/access_log.c \
+    web/server/h2o/libh2o/lib/handler/chunked.c \
+    web/server/h2o/libh2o/lib/handler/compress.c \
+    web/server/h2o/libh2o/lib/handler/compress/gzip.c \
+    web/server/h2o/libh2o/lib/handler/errordoc.c \
+    web/server/h2o/libh2o/lib/handler/expires.c \
+    web/server/h2o/libh2o/lib/handler/fastcgi.c \
+    web/server/h2o/libh2o/lib/handler/file.c \
+    web/server/h2o/libh2o/lib/handler/headers.c \
+    web/server/h2o/libh2o/lib/handler/mimemap.c \
+    web/server/h2o/libh2o/lib/handler/proxy.c \
+    web/server/h2o/libh2o/lib/handler/redirect.c \
+    web/server/h2o/libh2o/lib/handler/reproxy.c \
+    web/server/h2o/libh2o/lib/handler/throttle_resp.c \
+    web/server/h2o/libh2o/lib/handler/status.c \
+    web/server/h2o/libh2o/lib/handler/headers_util.c \
+    web/server/h2o/libh2o/lib/handler/status/events.c \
+    web/server/h2o/libh2o/lib/handler/status/requests.c \
+    web/server/h2o/libh2o/lib/handler/http2_debug_state.c \
+    web/server/h2o/libh2o/lib/handler/status/durations.c \
+    web/server/h2o/libh2o/lib/handler/configurator/access_log.c \
+    web/server/h2o/libh2o/lib/handler/configurator/compress.c \
+    web/server/h2o/libh2o/lib/handler/configurator/errordoc.c \
+    web/server/h2o/libh2o/lib/handler/configurator/expires.c \
+    web/server/h2o/libh2o/lib/handler/configurator/fastcgi.c \
+    web/server/h2o/libh2o/lib/handler/configurator/file.c \
+    web/server/h2o/libh2o/lib/handler/configurator/headers.c \
+    web/server/h2o/libh2o/lib/handler/configurator/proxy.c \
+    web/server/h2o/libh2o/lib/handler/configurator/redirect.c \
+    web/server/h2o/libh2o/lib/handler/configurator/reproxy.c \
+    web/server/h2o/libh2o/lib/handler/configurator/throttle_resp.c \
+    web/server/h2o/libh2o/lib/handler/configurator/status.c \
+    web/server/h2o/libh2o/lib/handler/configurator/http2_debug_state.c \
+    web/server/h2o/libh2o/lib/handler/configurator/headers_util.c \
+    web/server/h2o/libh2o/lib/http1.c \
+    web/server/h2o/libh2o/lib/tunnel.c \
+    web/server/h2o/libh2o/lib/http2/cache_digests.c \
+    web/server/h2o/libh2o/lib/http2/casper.c \
+    web/server/h2o/libh2o/lib/http2/connection.c \
+    web/server/h2o/libh2o/lib/http2/frame.c \
+    web/server/h2o/libh2o/lib/http2/hpack.c \
+    web/server/h2o/libh2o/lib/http2/scheduler.c \
+    web/server/h2o/libh2o/lib/http2/stream.c \
+    web/server/h2o/libh2o/lib/http2/http2_debug_state.c \
     $(NULL)
 
 libh2o_a_INCLUDES = \
-    -I$(srcdir)/httpd/h2o/include \
-    -I$(srcdir)/httpd/h2o/deps/cloexec \
-    -I$(srcdir)/httpd/h2o/deps/brotli/enc \
-    -I$(srcdir)/httpd/h2o/deps/golombset \
-    -I$(srcdir)/httpd/h2o/deps/libgkc \
-    -I$(srcdir)/httpd/h2o/deps/libyrmcds \
-    -I$(srcdir)/httpd/h2o/deps/klib \
-    -I$(srcdir)/httpd/h2o/deps/neverbleed \
-    -I$(srcdir)/httpd/h2o/deps/picohttpparser \
-    -I$(srcdir)/httpd/h2o/deps/picotest \
-    -I$(srcdir)/httpd/h2o/deps/yaml/include \
-    -I$(srcdir)/httpd/h2o/deps/yoml \
+    -I$(srcdir)/web/server/h2o/libh2o/include \
+    -I$(srcdir)/web/server/h2o/libh2o/deps/cloexec \
+    -I$(srcdir)/web/server/h2o/libh2o/deps/brotli/enc \
+    -I$(srcdir)/web/server/h2o/libh2o/deps/golombset \
+    -I$(srcdir)/web/server/h2o/libh2o/deps/libgkc \
+    -I$(srcdir)/web/server/h2o/libh2o/deps/libyrmcds \
+    -I$(srcdir)/web/server/h2o/libh2o/deps/klib \
+    -I$(srcdir)/web/server/h2o/libh2o/deps/neverbleed \
+    -I$(srcdir)/web/server/h2o/libh2o/deps/picohttpparser \
+    -I$(srcdir)/web/server/h2o/libh2o/deps/picotest \
+    -I$(srcdir)/web/server/h2o/libh2o/deps/yaml/include \
+    -I$(srcdir)/web/server/h2o/libh2o/deps/yoml \
     $(NULL)
 
-if ENABLE_HTTPD
+if ENABLE_H2O
 noinst_LIBRARIES += libh2o.a
 
 # until h2o updates support for OpenSSL 3.0 we silence the warnings
-libh2o_a_CFLAGS = $(CFLAGS) -Wno-deprecated-declarations -Wno-unused-parameter -Wno-sign-compare -Wno-missing-field-initializers -DH2O_USE_LIBUV=0 $(libh2o_a_INCLUDES)
+libh2o_a_CFLAGS = $(CFLAGS) -Wno-old-style-declaration -Wno-deprecated-declarations -Wno-unused-parameter -Wno-sign-compare -Wno-missing-field-initializers -DH2O_USE_LIBUV=0 $(libh2o_a_INCLUDES)
 
 if LINUX
     libh2o_a_CFLAGS += -D_GNU_SOURCE
 endif
-endif #ENABLE_HTTPD
+endif #ENABLE_H2O
 
 NETDATA_FILES = \
     collectors/all.h \
@@ -1075,6 +1229,7 @@ NETDATA_FILES = \
     $(ACLK_FILES) \
     $(SPAWN_PLUGIN_FILES) \
     $(TIMEX_PLUGIN_FILES) \
+    $(PROFILE_PLUGIN_FILES) \
     $(NULL)
 
 if FREEBSD
@@ -1110,21 +1265,28 @@ NETDATA_COMMON_LIBS = \
     $(OPTIONAL_MQTT_LIBS) \
     $(OPTIONAL_UV_LIBS) \
     $(OPTIONAL_LZ4_LIBS) \
+    $(OPTIONAL_CURL_LIBS) \
+    $(OPTIONAL_ZSTD_LIBS) \
+    $(OPTIONAL_BROTLIENC_LIBS) \
+    $(OPTIONAL_BROTLIDEC_LIBS) \
     $(OPTIONAL_DATACHANNEL_LIBS) \
     libjudy.a \
+    libcrutils.a \
     $(OPTIONAL_SSL_LIBS) \
     $(OPTIONAL_JSONC_LIBS) \
     $(OPTIONAL_YAML_LIBS) \
     $(OPTIONAL_ATOMIC_LIBS) \
     $(OPTIONAL_DL_LIBS) \
+    $(OPTIONAL_SYSTEMD_LIBS) \
+    $(OPTIONAL_GTEST_LIBS) \
     $(NULL)
 
 if ENABLE_ACLK
     NETDATA_COMMON_LIBS += libmqttwebsockets.a
 endif
 
-if ENABLE_HTTPD
-    NETDATA_FILES += $(HTTPD_FILES)
+if ENABLE_H2O
+    NETDATA_FILES += $(H2O_FILES)
     NETDATA_COMMON_LIBS += libh2o.a
 endif
 
@@ -1138,6 +1300,8 @@ endif
 
 NETDATACLI_FILES = \
     daemon/commands.h \
+    daemon/pipename.c \
+    daemon/pipename.h \
     libnetdata/buffer/buffer.c \
     libnetdata/buffer/buffer.h \
     cli/cli.c \
@@ -1197,12 +1361,56 @@ if ENABLE_PLUGIN_CGROUP_NETWORK
         $(NULL)
 endif
 
+if ENABLE_PLUGIN_LOCAL_LISTENERS
+    plugins_PROGRAMS += local-listeners
+    local_listeners_SOURCES = $(LOCAL_LISTENERS_FILES)
+    local_listeners_LDADD = \
+        $(NETDATA_COMMON_LIBS) \
+        $(NULL)
+endif
+
 if ENABLE_PLUGIN_FREEIPMI
     plugins_PROGRAMS += freeipmi.plugin
     freeipmi_plugin_SOURCES = $(FREEIPMI_PLUGIN_FILES)
     freeipmi_plugin_LDADD = \
         $(NETDATA_COMMON_LIBS) \
         $(OPTIONAL_IPMIMONITORING_LIBS) \
+        $(NULL)
+endif
+
+if ENABLE_LOG2JOURNAL
+    sbin_PROGRAMS += log2journal
+    log2journal_SOURCES = $(LOG2JOURNAL_FILES)
+    log2journal_LDADD = \
+            $(OPTIONAL_PCRE2_LIBS) \
+            $(OPTIONAL_YAML_LIBS) \
+            $(NULL)
+endif
+
+if ENABLE_PLUGIN_SYSTEMD_JOURNAL
+    plugins_PROGRAMS += systemd-journal.plugin
+    systemd_journal_plugin_SOURCES = $(SYSTEMD_JOURNAL_PLUGIN_FILES)
+    systemd_journal_plugin_LDADD = \
+        $(NETDATA_COMMON_LIBS) \
+        $(OPTIONAL_SYSTEMD_LIBS) \
+        $(NULL)
+endif
+
+sbin_PROGRAMS += systemd-cat-native
+systemd_cat_native_SOURCES = $(SYSTEMD_CAT_NATIVE_FILES)
+systemd_cat_native_LDADD = \
+        $(NETDATA_COMMON_LIBS) \
+        $(NULL)
+
+if ENABLE_LOGSMANAGEMENT
+    plugins_PROGRAMS += logs-management.plugin
+    logs_management_plugin_SOURCES = $(LOGSMANAGEMENT_FILES)
+if ENABLE_LOGSMANAGEMENT_TESTS
+    logs_management_plugin_SOURCES += $(LOGSMANAGEMENT_TESTS_FILES)
+endif
+    logs_management_plugin_LDADD = \
+        $(NETDATA_COMMON_LIBS) \
+        $(OPTIONAL_SYSTEMD_LIBS) \
         $(NULL)
 endif
 

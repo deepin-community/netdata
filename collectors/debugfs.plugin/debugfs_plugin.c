@@ -20,6 +20,9 @@ static struct debugfs_module {
       .func = do_debugfs_extfrag},
     { .name = "/sys/kernel/debug/zswap", .enabled = CONFIG_BOOLEAN_YES,
       .func = do_debugfs_zswap},
+    // Linux powercap metrics is here because it needs privilege to read each RAPL zone
+    { .name = "/sys/devices/virtual/powercap", .enabled = CONFIG_BOOLEAN_YES,
+      .func = do_sys_devices_virtual_powercap},
 
     // The terminator
     { .name = NULL, .enabled = CONFIG_BOOLEAN_NO, .func = NULL}
@@ -30,18 +33,18 @@ static int debugfs_check_capabilities()
 {
     cap_t caps = cap_get_proc();
     if (!caps) {
-        error("Cannot get current capabilities.");
+        netdata_log_error("Cannot get current capabilities.");
         return 0;
     }
 
     int ret = 1;
     cap_flag_value_t cfv = CAP_CLEAR;
     if (cap_get_flag(caps, CAP_DAC_READ_SEARCH, CAP_EFFECTIVE, &cfv) == -1) {
-        error("Cannot find if CAP_DAC_READ_SEARCH is effective.");
+        netdata_log_error("Cannot find if CAP_DAC_READ_SEARCH is effective.");
         ret = 0;
     } else {
         if (cfv != CAP_SET) {
-            error("debugfs.plugin should run with CAP_DAC_READ_SEARCH.");
+            netdata_log_error("debugfs.plugin should run with CAP_DAC_READ_SEARCH.");
             ret = 0;
         }
     }
@@ -156,17 +159,11 @@ static void debugfs_parse_args(int argc, char **argv)
 
 int main(int argc, char **argv)
 {
-    // debug_flags = D_PROCFILE;
-    stderror = stderr;
-
-    // set the name for logging
-    program_name = "debugfs.plugin";
-
-    // disable syslog for debugfs.plugin
-    error_log_syslog = 0;
+    clocks_init();
+    nd_log_initialize_for_external_plugins("debugfs.plugin");
 
     netdata_configured_host_prefix = getenv("NETDATA_HOST_PREFIX");
-    if (verify_netdata_host_prefix() == -1)
+    if (verify_netdata_host_prefix(true) == -1)
         exit(1);
 
     user_config_dir = getenv("NETDATA_USER_CONFIG_DIR");
@@ -176,7 +173,7 @@ int main(int argc, char **argv)
 
     stock_config_dir = getenv("NETDATA_STOCK_CONFIG_DIR");
     if (stock_config_dir == NULL) {
-        // info("NETDATA_CONFIG_DIR is not passed from netdata");
+        // netdata_log_info("NETDATA_CONFIG_DIR is not passed from netdata");
         stock_config_dir = LIBCONFIG_DIR;
     }
 
@@ -186,7 +183,7 @@ int main(int argc, char **argv)
     if (!debugfs_check_capabilities() && !debugfs_am_i_running_as_root() && !debugfs_check_sys_permission()) {
         uid_t uid = getuid(), euid = geteuid();
 #ifdef HAVE_CAPABILITY
-        error(
+        netdata_log_error(
             "debugfs.plugin should either run as root (now running with uid %u, euid %u) or have special capabilities. "
             "Without these, debugfs.plugin cannot access /sys/kernel/debug. "
             "To enable capabilities run: sudo setcap cap_dac_read_search,cap_sys_ptrace+ep %s; "
@@ -197,7 +194,7 @@ int main(int argc, char **argv)
             argv[0],
             argv[0]);
 #else
-        error(
+        netdata_log_error(
             "debugfs.plugin should either run as root (now running with uid %u, euid %u) or have special capabilities. "
             "Without these, debugfs.plugin cannot access /sys/kernel/debug."
             "Your system does not support capabilities. "
@@ -235,7 +232,14 @@ int main(int argc, char **argv)
                 enabled++;
         }
         if (!enabled) {
-            info("all modules are disabled, exiting...");
+            netdata_log_info("all modules are disabled, exiting...");
+            return 1;
+        }
+
+        fprintf(stdout, "\n");
+        fflush(stdout);
+        if (ferror(stdout) && errno == EPIPE) {
+            netdata_log_error("error writing to stdout: EPIPE. Exiting...");
             return 1;
         }
     }

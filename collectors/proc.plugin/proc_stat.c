@@ -494,7 +494,7 @@ int do_proc_stat(int update_every, usec_t dt) {
         do_processes              = config_get_boolean("plugin:proc:/proc/stat", "processes running", CONFIG_BOOLEAN_YES);
 
         // give sane defaults based on the number of processors
-        if(unlikely(get_system_cpus() > 50)) {
+        if(unlikely(get_system_cpus() > 128)) {
             // the system has too many processors
             keep_per_core_fds_open = CONFIG_BOOLEAN_NO;
             do_core_throttle_count = CONFIG_BOOLEAN_NO;
@@ -1038,7 +1038,7 @@ int do_proc_stat(int update_every, usec_t dt) {
                         );
 
                         char corebuf[50+1];
-                        snprintfz(corebuf, 50, "cpu%zu", core);
+                        snprintfz(corebuf, sizeof(corebuf) - 1, "cpu%zu", core);
                         rrdlabels_add(cpuidle_charts[core].st->rrdlabels, "cpu", corebuf, RRDLABEL_SRC_AUTO);
 
                         char cpuidle_dim_id[RRD_ID_LENGTH_MAX + 1];

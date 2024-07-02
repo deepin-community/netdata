@@ -7,7 +7,7 @@
 
 #define WORKER_UTILIZATION_MAX_JOB_TYPES 50
 
-typedef enum {
+typedef enum __attribute__((packed)) {
     WORKER_METRIC_EMPTY = 0,
     WORKER_METRIC_IDLE_BUSY = 1,
     WORKER_METRIC_ABSOLUTE = 2,
@@ -15,6 +15,7 @@ typedef enum {
     WORKER_METRIC_INCREMENTAL_TOTAL = 4,
 } WORKER_METRIC_TYPE;
 
+void workers_utilization_enable(void);
 size_t workers_allocated_memory(void);
 void worker_register(const char *name);
 void worker_register_job_name(size_t job_id, const char *name);

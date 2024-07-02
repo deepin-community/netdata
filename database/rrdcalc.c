@@ -5,6 +5,33 @@
 // ----------------------------------------------------------------------------
 // RRDCALC helpers
 
+void rrdcalc_flags_to_json_array(BUFFER *wb, const char *key, RRDCALC_FLAGS flags) {
+    buffer_json_member_add_array(wb, key);
+
+    if(flags & RRDCALC_FLAG_DB_ERROR)
+        buffer_json_add_array_item_string(wb, "DB_ERROR");
+    if(flags & RRDCALC_FLAG_DB_NAN)
+        buffer_json_add_array_item_string(wb, "DB_NAN");
+    if(flags & RRDCALC_FLAG_CALC_ERROR)
+        buffer_json_add_array_item_string(wb, "CALC_ERROR");
+    if(flags & RRDCALC_FLAG_WARN_ERROR)
+        buffer_json_add_array_item_string(wb, "WARN_ERROR");
+    if(flags & RRDCALC_FLAG_CRIT_ERROR)
+        buffer_json_add_array_item_string(wb, "CRIT_ERROR");
+    if(flags & RRDCALC_FLAG_RUNNABLE)
+        buffer_json_add_array_item_string(wb, "RUNNABLE");
+    if(flags & RRDCALC_FLAG_DISABLED)
+        buffer_json_add_array_item_string(wb, "DISABLED");
+    if(flags & RRDCALC_FLAG_SILENCED)
+        buffer_json_add_array_item_string(wb, "SILENCED");
+    if(flags & RRDCALC_FLAG_RUN_ONCE)
+        buffer_json_add_array_item_string(wb, "RUN_ONCE");
+    if(flags & RRDCALC_FLAG_FROM_TEMPLATE)
+        buffer_json_add_array_item_string(wb, "FROM_TEMPLATE");
+
+    buffer_json_array_close(wb);
+}
+
 inline const char *rrdcalc_status2string(RRDCALC_STATUS status) {
     switch(status) {
         case RRDCALC_STATUS_REMOVED:
@@ -29,18 +56,18 @@ inline const char *rrdcalc_status2string(RRDCALC_STATUS status) {
             return "CRITICAL";
 
         default:
-            error("Unknown alarm status %d", status);
+            netdata_log_error("Unknown alarm status %d", status);
             return "UNKNOWN";
     }
 }
 
-uint32_t rrdcalc_get_unique_id(RRDHOST *host, STRING *chart, STRING *name, uint32_t *next_event_id) {
-    netdata_rwlock_rdlock(&host->health_log.alarm_log_rwlock);
+uint32_t rrdcalc_get_unique_id(RRDHOST *host, STRING *chart, STRING *name, uint32_t *next_event_id, uuid_t *config_hash_id) {
+    rw_spinlock_read_lock(&host->health_log.spinlock);
 
     // re-use old IDs, by looking them up in the alarm log
     ALARM_ENTRY *ae = NULL;
     for(ae = host->health_log.alarms; ae ;ae = ae->next) {
-        if(unlikely(name == ae->name && chart == ae->chart)) {
+        if(unlikely(name == ae->name && chart == ae->chart && !uuid_memcmp(&ae->config_hash_id, config_hash_id))) {
             if(next_event_id) *next_event_id = ae->alarm_event_id + 1;
             break;
         }
@@ -52,18 +79,26 @@ uint32_t rrdcalc_get_unique_id(RRDHOST *host, STRING *chart, STRING *name, uint3
         alarm_id = ae->alarm_id;
 
     else {
-        if (unlikely(!host->health_log.next_alarm_id))
-            host->health_log.next_alarm_id = (uint32_t)now_realtime_sec();
+        alarm_id = sql_get_alarm_id(host, chart, name, next_event_id, config_hash_id);
 
-        alarm_id = host->health_log.next_alarm_id++;
+        if (!alarm_id) {
+            //check possible stored config hash as zeroes or null
+            alarm_id = sql_get_alarm_id_check_zero_hash(host, chart, name, next_event_id, config_hash_id);
+            if (!alarm_id) {
+                if (unlikely(!host->health_log.next_alarm_id))
+                    host->health_log.next_alarm_id = (uint32_t)now_realtime_sec();
+
+                alarm_id = host->health_log.next_alarm_id++;
+            }
+        }
     }
 
-    netdata_rwlock_unlock(&host->health_log.alarm_log_rwlock);
+    rw_spinlock_read_unlock(&host->health_log.spinlock);
     return alarm_id;
 }
 
 // ----------------------------------------------------------------------------
-// RRDCALC replacing info text variables with RRDSET labels
+// RRDCALC replacing info/summary text variables with RRDSET labels
 
 static STRING *rrdcalc_replace_variables_with_rrdset_labels(const char *line, RRDCALC *rc) {
     if (!line || !*line)
@@ -100,6 +135,7 @@ static STRING *rrdcalc_replace_variables_with_rrdset_labels(const char *line, RR
             label_val[i - RRDCALC_VAR_LABEL_LEN - 1] = '\0';
 
             if(likely(rc->rrdset && rc->rrdset->rrdlabels)) {
+                lbl_value = NULL;
                 rrdlabels_get_value_strdup_or_null(rc->rrdset->rrdlabels, &lbl_value, label_val);
                 if (lbl_value) {
                     char *buf = find_and_replace(temp, var, lbl_value, m);
@@ -120,12 +156,20 @@ static STRING *rrdcalc_replace_variables_with_rrdset_labels(const char *line, RR
 void rrdcalc_update_info_using_rrdset_labels(RRDCALC *rc) {
     if(!rc->rrdset || !rc->original_info || !rc->rrdset->rrdlabels) return;
 
-    size_t labels_version = dictionary_version(rc->rrdset->rrdlabels);
+    size_t labels_version = rrdlabels_version(rc->rrdset->rrdlabels);
     if(rc->labels_version != labels_version) {
 
-        STRING *old = rc->info;
-        rc->info = rrdcalc_replace_variables_with_rrdset_labels(rrdcalc_original_info(rc), rc);
-        string_freez(old);
+        if (rc->original_info) {
+            STRING *old = rc->info;
+            rc->info = rrdcalc_replace_variables_with_rrdset_labels(rrdcalc_original_info(rc), rc);
+            string_freez(old);
+        }
+
+         if (rc->original_summary) {
+            STRING *old = rc->summary;
+            rc->summary = rrdcalc_replace_variables_with_rrdset_labels(rrdcalc_original_summary(rc), rc);
+            string_freez(old);
+        }
 
         rc->labels_version = labels_version;
     }
@@ -175,28 +219,29 @@ RRDCALC *rrdcalc_acquired_to_rrdcalc(const RRDCALC_ACQUIRED *rca) {
 static void rrdcalc_link_to_rrdset(RRDSET *st, RRDCALC *rc) {
     RRDHOST *host = st->rrdhost;
 
-    debug(D_HEALTH, "Health linking alarm '%s.%s' to chart '%s' of host '%s'", rrdcalc_chart_name(rc), rrdcalc_name(rc), rrdset_id(st), rrdhost_hostname(host));
+    netdata_log_debug(D_HEALTH, "Health linking alarm '%s.%s' to chart '%s' of host '%s'", rrdcalc_chart_name(rc), rrdcalc_name(rc), rrdset_id(st), rrdhost_hostname(host));
 
+    rc->last_status_change_value = rc->value;
     rc->last_status_change = now_realtime_sec();
     rc->rrdset = st;
 
-    netdata_rwlock_wrlock(&st->alerts.rwlock);
+    rw_spinlock_write_lock(&st->alerts.spinlock);
     DOUBLE_LINKED_LIST_APPEND_ITEM_UNSAFE(st->alerts.base, rc, prev, next);
-    netdata_rwlock_unlock(&st->alerts.rwlock);
+    rw_spinlock_write_unlock(&st->alerts.spinlock);
 
     if(rc->update_every < rc->rrdset->update_every) {
-        error("Health alarm '%s.%s' has update every %d, less than chart update every %d. Setting alarm update frequency to %d.", rrdset_id(rc->rrdset), rrdcalc_name(rc), rc->update_every, rc->rrdset->update_every, rc->rrdset->update_every);
+        netdata_log_info("Health alarm '%s.%s' has update every %d, less than chart update every %d. Setting alarm update frequency to %d.", rrdset_id(rc->rrdset), rrdcalc_name(rc), rc->update_every, rc->rrdset->update_every, rc->rrdset->update_every);
         rc->update_every = rc->rrdset->update_every;
     }
 
     if(!isnan(rc->green) && isnan(st->green)) {
-        debug(D_HEALTH, "Health alarm '%s.%s' green threshold set from " NETDATA_DOUBLE_FORMAT_AUTO
+        netdata_log_debug(D_HEALTH, "Health alarm '%s.%s' green threshold set from " NETDATA_DOUBLE_FORMAT_AUTO
                         " to " NETDATA_DOUBLE_FORMAT_AUTO ".", rrdset_id(rc->rrdset), rrdcalc_name(rc), rc->rrdset->green, rc->green);
         st->green = rc->green;
     }
 
     if(!isnan(rc->red) && isnan(st->red)) {
-        debug(D_HEALTH, "Health alarm '%s.%s' red threshold set from " NETDATA_DOUBLE_FORMAT_AUTO " to " NETDATA_DOUBLE_FORMAT_AUTO
+        netdata_log_debug(D_HEALTH, "Health alarm '%s.%s' red threshold set from " NETDATA_DOUBLE_FORMAT_AUTO " to " NETDATA_DOUBLE_FORMAT_AUTO
                         ".", rrdset_id(rc->rrdset), rrdcalc_name(rc), rc->rrdset->red, rc->red);
         st->red = rc->red;
     }
@@ -249,6 +294,11 @@ static void rrdcalc_link_to_rrdset(RRDSET *st, RRDCALC *rc) {
 
     rrdcalc_update_info_using_rrdset_labels(rc);
 
+    if(!rc->summary) {
+        rc->summary = string_dup(rc->name);
+        rc->original_summary = string_dup(rc->name);
+    }
+
     time_t now = now_realtime_sec();
 
     ALARM_ENTRY *ae = health_create_alarm_entry(
@@ -260,7 +310,7 @@ static void rrdcalc_link_to_rrdset(RRDSET *st, RRDCALC *rc) {
         rc->name,
         rc->rrdset->id,
         rc->rrdset->context,
-        rc->rrdset->family,
+        rc->rrdset->name,
         rc->classification,
         rc->component,
         rc->type,
@@ -269,23 +319,26 @@ static void rrdcalc_link_to_rrdset(RRDSET *st, RRDCALC *rc) {
         now - rc->last_status_change,
         rc->old_value,
         rc->value,
+        RRDCALC_STATUS_REMOVED,
         rc->status,
-        RRDCALC_STATUS_UNINITIALIZED,
         rc->source,
         rc->units,
+        rc->summary,
         rc->info,
         0,
         rrdcalc_isrepeating(rc)?HEALTH_ENTRY_FLAG_IS_REPEATING:0);
 
+    rc->ae = ae;
     health_alarm_log_add_entry(host, ae);
+    rrdset_flag_set(st, RRDSET_FLAG_HAS_RRDCALC_LINKED);
 }
 
 static void rrdcalc_unlink_from_rrdset(RRDCALC *rc, bool having_ll_wrlock) {
     RRDSET *st = rc->rrdset;
 
     if(!st) {
-        debug(D_HEALTH, "Requested to unlink RRDCALC '%s.%s' which is not linked to any RRDSET", rrdcalc_chart_name(rc), rrdcalc_name(rc));
-        error("Requested to unlink RRDCALC '%s.%s' which is not linked to any RRDSET", rrdcalc_chart_name(rc), rrdcalc_name(rc));
+        netdata_log_debug(D_HEALTH, "Requested to unlink RRDCALC '%s.%s' which is not linked to any RRDSET", rrdcalc_chart_name(rc), rrdcalc_name(rc));
+        netdata_log_error("Requested to unlink RRDCALC '%s.%s' which is not linked to any RRDSET", rrdcalc_chart_name(rc), rrdcalc_name(rc));
         return;
     }
 
@@ -303,7 +356,7 @@ static void rrdcalc_unlink_from_rrdset(RRDCALC *rc, bool having_ll_wrlock) {
             rc->name,
             rc->rrdset->id,
             rc->rrdset->context,
-            rc->rrdset->family,
+            rc->rrdset->name,
             rc->classification,
             rc->component,
             rc->type,
@@ -316,24 +369,26 @@ static void rrdcalc_unlink_from_rrdset(RRDCALC *rc, bool having_ll_wrlock) {
             RRDCALC_STATUS_REMOVED,
             rc->source,
             rc->units,
+            rc->summary,
             rc->info,
             0,
             0);
 
+        rc->ae = ae;
         health_alarm_log_add_entry(host, ae);
     }
 
-    debug(D_HEALTH, "Health unlinking alarm '%s.%s' from chart '%s' of host '%s'", rrdcalc_chart_name(rc), rrdcalc_name(rc), rrdset_id(st), rrdhost_hostname(host));
+    netdata_log_debug(D_HEALTH, "Health unlinking alarm '%s.%s' from chart '%s' of host '%s'", rrdcalc_chart_name(rc), rrdcalc_name(rc), rrdset_id(st), rrdhost_hostname(host));
 
     // unlink it
 
     if(!having_ll_wrlock)
-        netdata_rwlock_wrlock(&st->alerts.rwlock);
+        rw_spinlock_write_lock(&st->alerts.spinlock);
 
     DOUBLE_LINKED_LIST_REMOVE_ITEM_UNSAFE(st->alerts.base, rc, prev, next);
 
     if(!having_ll_wrlock)
-        netdata_rwlock_unlock(&st->alerts.rwlock);
+        rw_spinlock_write_unlock(&st->alerts.spinlock);
 
     rc->rrdset = NULL;
 
@@ -378,7 +433,7 @@ static inline bool rrdcalc_check_if_it_matches_rrdset(RRDCALC *rc, RRDSET *st) {
 
 void rrdcalc_link_matching_alerts_to_rrdset(RRDSET *st) {
     RRDHOST *host = st->rrdhost;
-    // debug(D_HEALTH, "find matching alarms for chart '%s'", st->id);
+    // netdata_log_debug(D_HEALTH, "find matching alarms for chart '%s'", st->id);
 
     RRDCALC *rc;
     foreach_rrdcalc_in_rrdhost_read(host, rc) {
@@ -471,6 +526,11 @@ static void rrdcalc_rrdhost_insert_callback(const DICTIONARY_ITEM *item __maybe_
         rc->info = string_dup(rt->info);
         rc->original_info = string_dup(rt->info);
 
+        if (!rt->summary)
+            rt->summary = string_dup(rc->name);
+        rc->summary = string_dup(rt->summary);
+        rc->original_summary = string_dup(rt->summary);
+
         rc->classification = string_dup(rt->classification);
         rc->component = string_dup(rt->component);
         rc->type = string_dup(rt->type);
@@ -478,17 +538,17 @@ static void rrdcalc_rrdhost_insert_callback(const DICTIONARY_ITEM *item __maybe_
         if(rt->calculation) {
             rc->calculation = expression_parse(rt->calculation->source, NULL, NULL);
             if(!rc->calculation)
-                error("Health alarm '%s.%s': failed to parse calculation expression '%s'", rrdset_id(st), rrdcalctemplate_name(rt), rt->calculation->source);
+                netdata_log_error("Health alarm '%s.%s': failed to parse calculation expression '%s'", rrdset_id(st), rrdcalctemplate_name(rt), rt->calculation->source);
         }
         if(rt->warning) {
             rc->warning = expression_parse(rt->warning->source, NULL, NULL);
             if(!rc->warning)
-                error("Health alarm '%s.%s': failed to re-parse warning expression '%s'", rrdset_id(st), rrdcalctemplate_name(rt), rt->warning->source);
+                netdata_log_error("Health alarm '%s.%s': failed to re-parse warning expression '%s'", rrdset_id(st), rrdcalctemplate_name(rt), rt->warning->source);
         }
         if(rt->critical) {
             rc->critical = expression_parse(rt->critical->source, NULL, NULL);
             if(!rc->critical)
-                error("Health alarm '%s.%s': failed to re-parse critical expression '%s'", rrdset_id(st), rrdcalctemplate_name(rt), rt->critical->source);
+                netdata_log_error("Health alarm '%s.%s': failed to re-parse critical expression '%s'", rrdset_id(st), rrdcalctemplate_name(rt), rt->critical->source);
         }
     }
     else if(ctr->from_config) {
@@ -497,7 +557,7 @@ static void rrdcalc_rrdhost_insert_callback(const DICTIONARY_ITEM *item __maybe_
         ;
     }
 
-    rc->id = rrdcalc_get_unique_id(host, rc->chart, rc->name, &rc->next_event_id);
+    rc->id = rrdcalc_get_unique_id(host, rc->chart, rc->name, &rc->next_event_id, &rc->config_hash_id);
 
     if(rc->calculation) {
         rc->calculation->status = &rc->status;
@@ -523,7 +583,7 @@ static void rrdcalc_rrdhost_insert_callback(const DICTIONARY_ITEM *item __maybe_
         rc->critical->rrdcalc = rc;
     }
 
-    debug(D_HEALTH, "Health added alarm '%s.%s': exec '%s', recipient '%s', green " NETDATA_DOUBLE_FORMAT_AUTO
+    netdata_log_debug(D_HEALTH, "Health added alarm '%s.%s': exec '%s', recipient '%s', green " NETDATA_DOUBLE_FORMAT_AUTO
                     ", red " NETDATA_DOUBLE_FORMAT_AUTO
                     ", lookup: group %d, after %d, before %d, options %u, dimensions '%s', for each dimension '%s', update every %d, calculation '%s', warning '%s', critical '%s', source '%s', delay up %d, delay down %d, delay max %d, delay_multiplier %f, warn_repeat_every %u, crit_repeat_every %u",
           rrdcalc_chart_name(rc),
@@ -669,23 +729,23 @@ void rrdcalc_add_from_rrdcalctemplate(RRDHOST *host, RRDCALCTEMPLATE *rt, RRDSET
 
     dictionary_set_advanced(host->rrdcalc_root_index, key, (ssize_t)(key_len + 1), NULL, sizeof(RRDCALC), &tmp);
     if(tmp.react_action != RRDCALC_REACT_NEW && tmp.existing_from_template == false)
-        error("RRDCALC: from template '%s' on chart '%s' with key '%s', failed to be added to host '%s'. It is manually configured.",
+        netdata_log_error("RRDCALC: from template '%s' on chart '%s' with key '%s', failed to be added to host '%s'. It is manually configured.",
               string2str(rt->name), rrdset_id(st), key, rrdhost_hostname(host));
 }
 
 int rrdcalc_add_from_config(RRDHOST *host, RRDCALC *rc) {
     if(!rc->chart) {
-        error("Health configuration for alarm '%s' does not have a chart", rrdcalc_name(rc));
+        netdata_log_error("Health configuration for alarm '%s' does not have a chart", rrdcalc_name(rc));
         return 0;
     }
 
     if(!rc->update_every) {
-        error("Health configuration for alarm '%s.%s' has no frequency (parameter 'every'). Ignoring it.", rrdcalc_chart_name(rc), rrdcalc_name(rc));
+        netdata_log_error("Health configuration for alarm '%s.%s' has no frequency (parameter 'every'). Ignoring it.", rrdcalc_chart_name(rc), rrdcalc_name(rc));
         return 0;
     }
 
     if(!RRDCALC_HAS_DB_LOOKUP(rc) && !rc->calculation && !rc->warning && !rc->critical) {
-        error("Health configuration for alarm '%s.%s' is useless (no db lookup, no calculation, no warning and no critical expressions)", rrdcalc_chart_name(rc), rrdcalc_name(rc));
+        netdata_log_error("Health configuration for alarm '%s.%s' is useless (no db lookup, no calculation, no warning and no critical expressions)", rrdcalc_chart_name(rc), rrdcalc_name(rc));
         return 0;
     }
 
@@ -716,7 +776,7 @@ int rrdcalc_add_from_config(RRDHOST *host, RRDCALC *rc) {
         rrdset_foreach_done(st);
     }
     else {
-        error(
+        netdata_log_error(
             "RRDCALC: from config '%s' on chart '%s' failed to be added to host '%s'. It already exists.",
             string2str(rc->name),
             string2str(rc->chart),
@@ -749,10 +809,10 @@ void rrdcalc_delete_alerts_not_matching_host_labels_from_this_host(RRDHOST *host
             continue;
 
         if(!rrdlabels_match_simple_pattern_parsed(host->rrdlabels, rc->host_labels_pattern, '=', NULL)) {
-            log_health("Health configuration for alarm '%s' cannot be applied, because the host %s does not have the label(s) '%s'",
-                 rrdcalc_name(rc),
-                 rrdhost_hostname(host),
-                 rrdcalc_host_labels(rc));
+            nd_log(NDLS_DAEMON, NDLP_DEBUG,
+                   "Health configuration for alarm '%s' cannot be applied, "
+                   "because the host %s does not have the label(s) '%s'",
+                   rrdcalc_name(rc), rrdhost_hostname(host), rrdcalc_host_labels(rc));
 
             rrdcalc_unlink_and_delete(host, rc, false);
         }
@@ -774,10 +834,10 @@ void rrdcalc_delete_alerts_not_matching_host_labels_from_all_hosts() {
 
 void rrdcalc_unlink_all_rrdset_alerts(RRDSET *st) {
     RRDCALC *rc, *last = NULL;
-    netdata_rwlock_wrlock(&st->alerts.rwlock);
+    rw_spinlock_write_lock(&st->alerts.spinlock);
     while((rc = st->alerts.base)) {
         if(last == rc) {
-            error("RRDCALC: malformed list of alerts linked to chart - cannot cleanup - giving up.");
+            netdata_log_error("RRDCALC: malformed list of alerts linked to chart - cannot cleanup - giving up.");
             break;
         }
         last = rc;
@@ -793,7 +853,7 @@ void rrdcalc_unlink_all_rrdset_alerts(RRDSET *st) {
         }
 
     }
-    netdata_rwlock_unlock(&st->alerts.rwlock);
+    rw_spinlock_write_unlock(&st->alerts.spinlock);
 }
 
 void rrdcalc_delete_all(RRDHOST *host) {

@@ -18,6 +18,7 @@ Makefile.in
 .*.swp
 *.old
 *.log
+!collectors/log2journal/tests.d/*.log
 *.pyc
 
 Makefile
@@ -41,6 +42,9 @@ sha256sums.txt
 # netdata binaries
 netdata
 netdatacli
+systemd-cat-native
+log2journal
+!log2journal/
 !netdata/
 upload/
 artifacts/
@@ -69,6 +73,9 @@ slabinfo.plugin
 cgroup-network
 !cgroup-network/
 
+local-listeners
+!local-listeners/
+
 ebpf.plugin
 collectors/ebpf.plugin/reset_netdata_trace.sh
 !ebpf.plugin/
@@ -76,6 +83,12 @@ collectors/ebpf.plugin/includes/
 
 debugfs.plugin
 !debugfs.plugin/
+
+systemd-journal.plugin
+!systemd-journal.plugin/
+
+logs-management.plugin
+!logs-management.plugin/
 
 # protoc generated files
 *.pb.cc
@@ -96,7 +109,8 @@ netdata-coverity-analysis.tgz
 
 .cproject/
 .idea/
-.vscode/
+.vscode/*
+!.vscode/settings.default.json
 .project/
 .settings/
 README
@@ -135,12 +149,16 @@ daemon/get-kubernetes-labels.sh
 
 health/notifications/alarm-notify.sh
 claim/netdata-claim.sh
+collectors/cgroups.plugin/cgroup-name.sh
+collectors/cgroups.plugin/cgroup-network-helper.sh
 collectors/tc.plugin/tc-qos-helper.sh
 collectors/charts.d.plugin/charts.d.plugin
 collectors/python.d.plugin/python.d.plugin
 collectors/ioping.plugin/ioping.plugin
 collectors/go.d.plugin
 web/netdata-switch-dashboard.sh
+
+logsmanagement/stress_test/stress_test
 
 # installer generated files
 /netdata-uninstaller.sh
@@ -193,6 +211,7 @@ tests/acls/acl.sh
 tests/urls/request.sh
 tests/alarm_repetition/alarm.sh
 tests/template_dimension/template_dim.sh
+tests/ebpf/ebpf_thread_function.sh
 aclk/legacy/tests/install-fake-charts.d.sh
 
 # tests and temp files

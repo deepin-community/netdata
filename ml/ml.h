@@ -9,6 +9,7 @@ extern "C" {
 
 #include "daemon/common.h"
 #include "web/api/queries/rrdr.h"
+#include "database/sqlite/sqlite_db_migration.h"
 
 bool ml_capable();
 bool ml_enabled(RRDHOST *rh);
@@ -23,6 +24,9 @@ void ml_stop_threads(void);
 void ml_host_new(RRDHOST *rh);
 void ml_host_delete(RRDHOST *rh);
 
+void ml_host_start(RRDHOST *RH);
+void ml_host_stop(RRDHOST *RH);
+
 void ml_host_get_info(RRDHOST *RH, BUFFER *wb);
 void ml_host_get_detection_info(RRDHOST *RH, BUFFER *wb);
 void ml_host_get_models(RRDHOST *RH, BUFFER *wb);
@@ -36,9 +40,12 @@ void ml_dimension_new(RRDDIM *rd);
 void ml_dimension_delete(RRDDIM *rd);
 bool ml_dimension_is_anomalous(RRDDIM *rd, time_t curr_time, double value, bool exists);
 
-int ml_dimension_load_models(RRDDIM *rd);
+int ml_dimension_load_models(RRDDIM *rd, sqlite3_stmt **stmt);
 
 void ml_update_global_statistics_charts(uint64_t models_consulted);
+
+bool ml_host_get_host_status(RRDHOST *rh, struct ml_metrics_statistics *mlm);
+bool ml_host_running(RRDHOST *rh);
 
 #ifdef __cplusplus
 };

@@ -2,6 +2,7 @@
 
 #include "exporting_engine.h"
 
+#ifdef ENABLE_HTTPS
 /**
  * Check if TLS is enabled in the configuration
  *
@@ -9,14 +10,16 @@
  * @param options an instance data structure.
  * @return Returns 1 if TLS should be enabled, 0 otherwise.
  */
-static int exporting_tls_is_enabled(EXPORTING_CONNECTOR_TYPE type, EXPORTING_OPTIONS options)
+static int exporting_tls_is_enabled(EXPORTING_CONNECTOR_TYPE type __maybe_unused, EXPORTING_OPTIONS options __maybe_unused)
 {
+
     return (type == EXPORTING_CONNECTOR_TYPE_GRAPHITE_HTTP ||
             type == EXPORTING_CONNECTOR_TYPE_JSON_HTTP ||
             type == EXPORTING_CONNECTOR_TYPE_OPENTSDB_HTTP ||
             type == EXPORTING_CONNECTOR_TYPE_PROMETHEUS_REMOTE_WRITE) &&
            options & EXPORTING_OPTION_USE_TLS;
 }
+#endif
 
 /**
  * Discard response
@@ -40,12 +43,11 @@ int exporting_discard_response(BUFFER *buffer, struct instance *instance) {
     }
     *d = '\0';
 
-    debug(
-        D_EXPORTING,
-        "EXPORTING: received %zu bytes from %s connector instance. Ignoring them. Sample: '%s'",
-        buffer_strlen(buffer),
-        instance->config.name,
-        sample);
+    netdata_log_debug(D_EXPORTING,
+                      "EXPORTING: received %zu bytes from %s connector instance. Ignoring them. Sample: '%s'",
+                      buffer_strlen(buffer),
+                      instance->config.name,
+                      sample);
 #else
     UNUSED(instance);
 #endif /* NETDATA_INTERNAL_CHECKS */
@@ -96,14 +98,16 @@ void simple_connector_receive_response(int *sock, struct instance *instance)
             stats->receptions++;
         }
         else if (r == 0) {
-            error("EXPORTING: '%s' closed the socket", instance->config.destination);
+            netdata_log_error("EXPORTING: '%s' closed the socket", instance->config.destination);
             close(*sock);
             *sock = -1;
         }
         else {
             // failed to receive data
             if (errno != EAGAIN && errno != EWOULDBLOCK) {
-                error("EXPORTING: cannot receive data from '%s'.", instance->config.destination);
+                netdata_log_error("EXPORTING: cannot receive data from '%s'.", instance->config.destination);
+                close(*sock);
+                *sock = -1;
             }
         }
 
@@ -182,7 +186,7 @@ void simple_connector_send_buffer(
         buffer_flush(buffer);
     } else {
         // oops! we couldn't send (all or some of the) data
-        error(
+        netdata_log_error(
             "EXPORTING: failed to write data to '%s'. Willing to write %zu bytes, wrote %zd bytes. Will re-connect.",
             instance->config.destination,
             buffer_len,
@@ -299,11 +303,11 @@ void simple_connector_worker(void *instance_p)
             if (exporting_tls_is_enabled(instance->config.type, options) && sock != -1) {
                 if (netdata_ssl_exporting_ctx) {
                     if (sock_delnonblock(sock) < 0)
-                        error("Exporting cannot remove the non-blocking flag from socket %d", sock);
+                        netdata_log_error("Exporting cannot remove the non-blocking flag from socket %d", sock);
 
                     if(netdata_ssl_open(&connector_specific_data->ssl, netdata_ssl_exporting_ctx, sock)) {
                         if(netdata_ssl_connect(&connector_specific_data->ssl)) {
-                            info("Exporting established a SSL connection.");
+                            netdata_log_info("Exporting established a SSL connection.");
 
                             struct timeval tv;
                             tv.tv_sec = timeout.tv_sec / 4;
@@ -313,7 +317,7 @@ void simple_connector_worker(void *instance_p)
                                 tv.tv_sec = 2;
 
                             if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv, sizeof(tv)))
-                                error("Cannot set timeout to socket %d, this can block communication", sock);
+                                netdata_log_error("Cannot set timeout to socket %d, this can block communication", sock);
                         }
                     }
                 }
@@ -340,7 +344,7 @@ void simple_connector_worker(void *instance_p)
                 connector_specific_data->buffer,
                 buffered_metrics);
         } else {
-            error("EXPORTING: failed to update '%s'", instance->config.destination);
+            netdata_log_error("EXPORTING: failed to update '%s'", instance->config.destination);
             stats->transmission_failures++;
 
             // increment the counter we check for data loss

@@ -50,6 +50,10 @@ netdata_ebpf_targets_t shm_targets[] = { {.name = "shmget", .mode = EBPF_LOAD_TR
                                          {.name = "shmctl", .mode = EBPF_LOAD_TRAMPOLINE},
                                          {.name = NULL, .mode = EBPF_LOAD_TRAMPOLINE}};
 
+#ifdef NETDATA_DEV_MODE
+int shm_disable_priority;
+#endif
+
 #ifdef LIBBPF_MAJOR_VERSION
 /*****************************************************************
  *
@@ -288,6 +292,168 @@ static inline int ebpf_shm_load_and_attach(struct shm_bpf *obj, ebpf_module_t *e
  *  FUNCTIONS TO CLOSE THE THREAD
  *****************************************************************/
 
+static void ebpf_obsolete_specific_shm_charts(char *type, int update_every);
+
+/**
+ * Obsolete services
+ *
+ * Obsolete all service charts created
+ *
+ * @param em a pointer to `struct ebpf_module`
+ */
+static void ebpf_obsolete_shm_services(ebpf_module_t *em)
+{
+    ebpf_write_chart_obsolete(NETDATA_SERVICE_FAMILY,
+                              NETDATA_SHMGET_CHART,
+                              "",
+                              "Calls to syscall shmget(2).",
+                              EBPF_COMMON_DIMENSION_CALL,
+                              NETDATA_APPS_IPC_SHM_GROUP,
+                              NETDATA_EBPF_CHART_TYPE_STACKED,
+                              NULL,
+                              20191,
+                              em->update_every);
+
+    ebpf_write_chart_obsolete(NETDATA_SERVICE_FAMILY,
+                              NETDATA_SHMAT_CHART,
+                              "",
+                              "Calls to syscall shmat(2).",
+                              EBPF_COMMON_DIMENSION_CALL,
+                              NETDATA_APPS_IPC_SHM_GROUP,
+                              NETDATA_EBPF_CHART_TYPE_STACKED,
+                              NULL,
+                              20192,
+                              em->update_every);
+
+    ebpf_write_chart_obsolete(NETDATA_SERVICE_FAMILY,
+                              NETDATA_SHMDT_CHART,
+                              "",
+                              "Calls to syscall shmdt(2).",
+                              EBPF_COMMON_DIMENSION_CALL,
+                              NETDATA_APPS_IPC_SHM_GROUP,
+                              NETDATA_EBPF_CHART_TYPE_STACKED,
+                              NULL,
+                              20193,
+                              em->update_every);
+
+    ebpf_write_chart_obsolete(NETDATA_SERVICE_FAMILY,
+                              NETDATA_SHMCTL_CHART,
+                              "",
+                              "Calls to syscall shmctl(2).",
+                              EBPF_COMMON_DIMENSION_CALL,
+                              NETDATA_APPS_IPC_SHM_GROUP,
+                              NETDATA_EBPF_CHART_TYPE_STACKED,
+                              NULL,
+                              20193,
+                              em->update_every);
+}
+
+/**
+ * Obsolete cgroup chart
+ *
+ * Send obsolete for all charts created before to close.
+ *
+ * @param em a pointer to `struct ebpf_module`
+ */
+static inline void ebpf_obsolete_shm_cgroup_charts(ebpf_module_t *em) {
+    pthread_mutex_lock(&mutex_cgroup_shm);
+
+    ebpf_obsolete_shm_services(em);
+
+    ebpf_cgroup_target_t *ect;
+    for (ect = ebpf_cgroup_pids; ect ; ect = ect->next) {
+        if (ect->systemd)
+            continue;
+
+        ebpf_obsolete_specific_shm_charts(ect->name, em->update_every);
+    }
+    pthread_mutex_unlock(&mutex_cgroup_shm);
+}
+
+/**
+ * Obsolette apps charts
+ *
+ * Obsolete apps charts.
+ *
+ * @param em a pointer to the structure with the default values.
+ */
+void ebpf_obsolete_shm_apps_charts(struct ebpf_module *em)
+{
+    struct ebpf_target *w;
+    int update_every = em->update_every;
+    for (w = apps_groups_root_target; w; w = w->next) {
+        if (unlikely(!(w->charts_created & (1<<EBPF_MODULE_SHM_IDX))))
+            continue;
+
+        ebpf_write_chart_obsolete(NETDATA_APP_FAMILY,
+                                  w->clean_name,
+                                  "_ebpf_shmget_call",
+                                  "Calls to syscall shmget(2).",
+                                  EBPF_COMMON_DIMENSION_CALL,
+                                  NETDATA_APPS_IPC_SHM_GROUP,
+                                  NETDATA_EBPF_CHART_TYPE_STACKED,
+                                  "app.ebpf_shmget_call",
+                                  20191,
+                                  update_every);
+
+        ebpf_write_chart_obsolete(NETDATA_APP_FAMILY,
+                                  w->clean_name,
+                                  "_ebpf_shmat_call",
+                                  "Calls to syscall shmat(2).",
+                                  EBPF_COMMON_DIMENSION_CALL,
+                                  NETDATA_APPS_IPC_SHM_GROUP,
+                                  NETDATA_EBPF_CHART_TYPE_STACKED,
+                                  "app.ebpf_shmat_call",
+                                  20192,
+                                  update_every);
+
+        ebpf_write_chart_obsolete(NETDATA_APP_FAMILY,
+                                  w->clean_name,
+                                  "_ebpf_shmdt_call",
+                                  "Calls to syscall shmdt(2).",
+                                  EBPF_COMMON_DIMENSION_CALL,
+                                  NETDATA_APPS_IPC_SHM_GROUP,
+                                  NETDATA_EBPF_CHART_TYPE_STACKED,
+                                  "app.ebpf_shmdt_call",
+                                  20193,
+                                  update_every);
+
+        ebpf_write_chart_obsolete(NETDATA_APP_FAMILY,
+                                  w->clean_name,
+                                  "_ebpf_shmctl_call",
+                                  "Calls to syscall shmctl(2).",
+                                  EBPF_COMMON_DIMENSION_CALL,
+                                  NETDATA_APPS_IPC_SHM_GROUP,
+                                  NETDATA_EBPF_CHART_TYPE_STACKED,
+                                  "app.ebpf_shmctl_call",
+                                  20194,
+                                  update_every);
+
+        w->charts_created &= ~(1<<EBPF_MODULE_SHM_IDX);
+    }
+}
+
+/**
+ * Obsolete global
+ *
+ * Obsolete global charts created by thread.
+ *
+ * @param em a pointer to `struct ebpf_module`
+ */
+static void ebpf_obsolete_shm_global(ebpf_module_t *em)
+{
+    ebpf_write_chart_obsolete(NETDATA_EBPF_SYSTEM_GROUP,
+                              NETDATA_SHM_GLOBAL_CHART,
+                              "",
+                              "Calls to shared memory system calls",
+                              EBPF_COMMON_DIMENSION_CALL,
+                              NETDATA_SYSTEM_IPC_SHM_SUBMENU,
+                              NETDATA_EBPF_CHART_TYPE_LINE,
+                              NULL,
+                              NETDATA_CHART_PRIO_SYSTEM_IPC_SHARED_MEM_CALLS,
+                              em->update_every);
+}
+
 /**
  * SHM Exit
  *
@@ -299,16 +465,46 @@ static void ebpf_shm_exit(void *ptr)
 {
     ebpf_module_t *em = (ebpf_module_t *)ptr;
 
-#ifdef LIBBPF_MAJOR_VERSION
-    if (shm_bpf_obj)
-        shm_bpf__destroy(shm_bpf_obj);
+    if (em->enabled == NETDATA_THREAD_EBPF_FUNCTION_RUNNING) {
+        pthread_mutex_lock(&lock);
+        if (em->cgroup_charts) {
+            ebpf_obsolete_shm_cgroup_charts(em);
+            fflush(stdout);
+        }
+
+        if (em->apps_charts & NETDATA_EBPF_APPS_FLAG_CHART_CREATED) {
+            ebpf_obsolete_shm_apps_charts(em);
+        }
+
+        ebpf_obsolete_shm_global(em);
+
+#ifdef NETDATA_DEV_MODE
+    if (ebpf_aral_shm_pid)
+        ebpf_statistic_obsolete_aral_chart(em, shm_disable_priority);
 #endif
 
-    if (em->objects)
+        fflush(stdout);
+        pthread_mutex_unlock(&lock);
+    }
+
+    ebpf_update_kernel_memory_with_vector(&plugin_statistics, em->maps, EBPF_ACTION_STAT_REMOVE);
+
+#ifdef LIBBPF_MAJOR_VERSION
+    if (shm_bpf_obj) {
+        shm_bpf__destroy(shm_bpf_obj);
+        shm_bpf_obj = NULL;
+    }
+#endif
+
+    if (em->objects) {
         ebpf_unload_legacy_code(em->objects, em->probe_links);
+        em->objects = NULL;
+        em->probe_links = NULL;
+    }
 
     pthread_mutex_lock(&ebpf_exit_cleanup);
     em->enabled = NETDATA_THREAD_EBPF_STOPPED;
+    ebpf_update_stats(&plugin_statistics, em);
     pthread_mutex_unlock(&ebpf_exit_cleanup);
 }
 
@@ -443,7 +639,7 @@ static void read_shm_apps_table(int maps_per_core)
 */
 static void shm_send_global()
 {
-    write_begin_chart(NETDATA_EBPF_SYSTEM_GROUP, NETDATA_SHM_GLOBAL_CHART);
+    ebpf_write_begin_chart(NETDATA_EBPF_SYSTEM_GROUP, NETDATA_SHM_GLOBAL_CHART, "");
     write_chart_dimension(
         shm_publish_aggregated[NETDATA_KEY_SHMGET_CALL].dimension,
         (long long) shm_hash_values[NETDATA_KEY_SHMGET_CALL]
@@ -460,7 +656,7 @@ static void shm_send_global()
         shm_publish_aggregated[NETDATA_KEY_SHMCTL_CALL].dimension,
         (long long) shm_hash_values[NETDATA_KEY_SHMCTL_CALL]
     );
-    write_end_chart();
+    ebpf_write_end_chart();
 }
 
 /**
@@ -468,30 +664,24 @@ static void shm_send_global()
  *
  * Read the table with number of calls for all functions
  *
+ * @param stats         vector used to read data from control table.
  * @param maps_per_core do I need to read all cores?
  */
-static void ebpf_shm_read_global_table(int maps_per_core)
+static void ebpf_shm_read_global_table(netdata_idx_t *stats, int maps_per_core)
 {
-    netdata_idx_t *stored = shm_values;
-    netdata_idx_t *val = shm_hash_values;
-    int fd = shm_maps[NETDATA_SHM_GLOBAL_TABLE].map_fd;
-    size_t length = sizeof(netdata_idx_t);
-    if (maps_per_core)
-        length *= ebpf_nprocs;
+    ebpf_read_global_table_stats(shm_hash_values,
+                                 shm_values,
+                                 shm_maps[NETDATA_SHM_GLOBAL_TABLE].map_fd,
+                                 maps_per_core,
+                                 NETDATA_KEY_SHMGET_CALL,
+                                 NETDATA_SHM_END);
 
-    uint32_t i, end = NETDATA_SHM_END;
-    for (i = NETDATA_KEY_SHMGET_CALL; i < end; i++) {
-        if (!bpf_map_lookup_elem(fd, &i, stored)) {
-            int j;
-            int last = (maps_per_core) ? ebpf_nprocs : 1;
-            netdata_idx_t total = 0;
-            for (j = 0; j < last; j++)
-                total += stored[j];
-
-            val[i] = total;
-            memset(stored, 0 , length);
-        }
-    }
+    ebpf_read_global_table_stats(stats,
+                                 shm_values,
+                                 shm_maps[NETDATA_SHM_CONTROLLER].map_fd,
+                                 maps_per_core,
+                                 NETDATA_CONTROLLER_PID_TABLE_ADD,
+                                 NETDATA_CONTROLLER_END);
 }
 
 /**
@@ -527,42 +717,27 @@ void ebpf_shm_send_apps_data(struct ebpf_target *root)
 {
     struct ebpf_target *w;
     for (w = root; w; w = w->next) {
-        if (unlikely(w->exposed && w->processes)) {
-            ebpf_shm_sum_pids(&w->shm, w->root_pid);
-        }
-    }
+        if (unlikely(!(w->charts_created & (1<<EBPF_MODULE_SHM_IDX))))
+            continue;
 
-    write_begin_chart(NETDATA_APPS_FAMILY, NETDATA_SHMGET_CHART);
-    for (w = root; w; w = w->next) {
-        if (unlikely(w->exposed && w->processes)) {
-            write_chart_dimension(w->name, (long long) w->shm.get);
-        }
-    }
-    write_end_chart();
+        ebpf_shm_sum_pids(&w->shm, w->root_pid);
 
-    write_begin_chart(NETDATA_APPS_FAMILY, NETDATA_SHMAT_CHART);
-    for (w = root; w; w = w->next) {
-        if (unlikely(w->exposed && w->processes)) {
-            write_chart_dimension(w->name, (long long) w->shm.at);
-        }
-    }
-    write_end_chart();
+        ebpf_write_begin_chart(NETDATA_APP_FAMILY, w->clean_name, "_ebpf_shmget_call");
+        write_chart_dimension("calls", (long long) w->shm.get);
+        ebpf_write_end_chart();
 
-    write_begin_chart(NETDATA_APPS_FAMILY, NETDATA_SHMDT_CHART);
-    for (w = root; w; w = w->next) {
-        if (unlikely(w->exposed && w->processes)) {
-            write_chart_dimension(w->name, (long long) w->shm.dt);
-        }
-    }
-    write_end_chart();
+        ebpf_write_begin_chart(NETDATA_APP_FAMILY, w->clean_name, "_ebpf_shmat_call");
+        write_chart_dimension("calls", (long long) w->shm.at);
+        ebpf_write_end_chart();
 
-    write_begin_chart(NETDATA_APPS_FAMILY, NETDATA_SHMCTL_CHART);
-    for (w = root; w; w = w->next) {
-        if (unlikely(w->exposed && w->processes)) {
-            write_chart_dimension(w->name, (long long) w->shm.ctl);
-        }
+        ebpf_write_begin_chart(NETDATA_APP_FAMILY, w->clean_name, "_ebpf_shmdt_call");
+        write_chart_dimension("calls", (long long) w->shm.dt);
+        ebpf_write_end_chart();
+
+        ebpf_write_begin_chart(NETDATA_APP_FAMILY, w->clean_name, "_ebpf_shmctl_call");
+        write_chart_dimension("calls", (long long) w->shm.ctl);
+        ebpf_write_end_chart();
     }
-    write_end_chart();
 }
 
 /**
@@ -596,7 +771,7 @@ static void ebpf_shm_sum_cgroup_pids(netdata_publish_shm_t *shm, struct pid_on_t
 static void ebpf_create_specific_shm_charts(char *type, int update_every)
 {
     ebpf_create_chart(type, NETDATA_SHMGET_CHART,
-                      "Calls to syscall <code>shmget(2)</code>.",
+                      "Calls to syscall shmget(2).",
                       EBPF_COMMON_DIMENSION_CALL,
                       NETDATA_APPS_IPC_SHM_GROUP,
                       NETDATA_CGROUP_SHM_GET_CONTEXT,
@@ -609,7 +784,7 @@ static void ebpf_create_specific_shm_charts(char *type, int update_every)
                       NETDATA_EBPF_MODULE_NAME_SHM);
 
     ebpf_create_chart(type, NETDATA_SHMAT_CHART,
-                      "Calls to syscall <code>shmat(2)</code>.",
+                      "Calls to syscall shmat(2).",
                       EBPF_COMMON_DIMENSION_CALL,
                       NETDATA_APPS_IPC_SHM_GROUP,
                       NETDATA_CGROUP_SHM_AT_CONTEXT,
@@ -622,7 +797,7 @@ static void ebpf_create_specific_shm_charts(char *type, int update_every)
                       NETDATA_EBPF_MODULE_NAME_SHM);
 
     ebpf_create_chart(type, NETDATA_SHMDT_CHART,
-                      "Calls to syscall <code>shmdt(2)</code>.",
+                      "Calls to syscall shmdt(2).",
                       EBPF_COMMON_DIMENSION_CALL,
                       NETDATA_APPS_IPC_SHM_GROUP,
                       NETDATA_CGROUP_SHM_DT_CONTEXT,
@@ -635,7 +810,7 @@ static void ebpf_create_specific_shm_charts(char *type, int update_every)
                       NETDATA_EBPF_MODULE_NAME_SHM);
 
     ebpf_create_chart(type, NETDATA_SHMCTL_CHART,
-                      "Calls to syscall <code>shmctl(2)</code>.",
+                      "Calls to syscall shmctl(2).",
                       EBPF_COMMON_DIMENSION_CALL,
                       NETDATA_APPS_IPC_SHM_GROUP,
                       NETDATA_CGROUP_SHM_CTL_CONTEXT,
@@ -659,28 +834,32 @@ static void ebpf_create_specific_shm_charts(char *type, int update_every)
 static void ebpf_obsolete_specific_shm_charts(char *type, int update_every)
 {
     ebpf_write_chart_obsolete(type, NETDATA_SHMGET_CHART,
-                              "Calls to syscall <code>shmget(2)</code>.",
+                              "",
+                              "Calls to syscall shmget(2).",
                               EBPF_COMMON_DIMENSION_CALL,
                               NETDATA_APPS_IPC_SHM_GROUP,
                               NETDATA_EBPF_CHART_TYPE_LINE, NETDATA_CGROUP_SHM_GET_CONTEXT,
                               NETDATA_CHART_PRIO_CGROUPS_CONTAINERS + 5800, update_every);
 
     ebpf_write_chart_obsolete(type, NETDATA_SHMAT_CHART,
-                              "Calls to syscall <code>shmat(2)</code>.",
+                              "",
+                              "Calls to syscall shmat(2).",
                               EBPF_COMMON_DIMENSION_CALL,
                               NETDATA_APPS_IPC_SHM_GROUP,
                               NETDATA_EBPF_CHART_TYPE_LINE, NETDATA_CGROUP_SHM_AT_CONTEXT,
                               NETDATA_CHART_PRIO_CGROUPS_CONTAINERS + 5801, update_every);
 
     ebpf_write_chart_obsolete(type, NETDATA_SHMDT_CHART,
-                              "Calls to syscall <code>shmdt(2)</code>.",
+                              "",
+                              "Calls to syscall shmdt(2).",
                               EBPF_COMMON_DIMENSION_CALL,
                               NETDATA_APPS_IPC_SHM_GROUP,
                               NETDATA_EBPF_CHART_TYPE_LINE, NETDATA_CGROUP_SHM_DT_CONTEXT,
                               NETDATA_CHART_PRIO_CGROUPS_CONTAINERS + 5802, update_every);
 
     ebpf_write_chart_obsolete(type, NETDATA_SHMCTL_CHART,
-                              "Calls to syscall <code>shmctl(2)</code>.",
+                              "",
+                              "Calls to syscall shmctl(2).",
                               EBPF_COMMON_DIMENSION_CALL,
                               NETDATA_APPS_IPC_SHM_GROUP,
                               NETDATA_EBPF_CHART_TYPE_LINE, NETDATA_CGROUP_SHM_CTL_CONTEXT,
@@ -697,7 +876,7 @@ static void ebpf_obsolete_specific_shm_charts(char *type, int update_every)
 static void ebpf_create_systemd_shm_charts(int update_every)
 {
     ebpf_create_charts_on_systemd(NETDATA_SHMGET_CHART,
-                                  "Calls to syscall <code>shmget(2)</code>.",
+                                  "Calls to syscall shmget(2).",
                                   EBPF_COMMON_DIMENSION_CALL,
                                   NETDATA_APPS_IPC_SHM_GROUP,
                                   NETDATA_EBPF_CHART_TYPE_STACKED,
@@ -706,7 +885,7 @@ static void ebpf_create_systemd_shm_charts(int update_every)
                                   NETDATA_SYSTEMD_SHM_GET_CONTEXT, NETDATA_EBPF_MODULE_NAME_SHM, update_every);
 
     ebpf_create_charts_on_systemd(NETDATA_SHMAT_CHART,
-                                  "Calls to syscall <code>shmat(2)</code>.",
+                                  "Calls to syscall shmat(2).",
                                   EBPF_COMMON_DIMENSION_CALL,
                                   NETDATA_APPS_IPC_SHM_GROUP,
                                   NETDATA_EBPF_CHART_TYPE_STACKED,
@@ -715,7 +894,7 @@ static void ebpf_create_systemd_shm_charts(int update_every)
                                   NETDATA_SYSTEMD_SHM_AT_CONTEXT, NETDATA_EBPF_MODULE_NAME_SHM, update_every);
 
     ebpf_create_charts_on_systemd(NETDATA_SHMDT_CHART,
-                                  "Calls to syscall <code>shmdt(2)</code>.",
+                                  "Calls to syscall shmdt(2).",
                                   EBPF_COMMON_DIMENSION_CALL,
                                   NETDATA_APPS_IPC_SHM_GROUP,
                                   NETDATA_EBPF_CHART_TYPE_STACKED,
@@ -724,7 +903,7 @@ static void ebpf_create_systemd_shm_charts(int update_every)
                                   NETDATA_SYSTEMD_SHM_DT_CONTEXT, NETDATA_EBPF_MODULE_NAME_SHM, update_every);
 
     ebpf_create_charts_on_systemd(NETDATA_SHMCTL_CHART,
-                                  "Calls to syscall <code>shmctl(2)</code>.",
+                                  "Calls to syscall shmctl(2).",
                                   EBPF_COMMON_DIMENSION_CALL,
                                   NETDATA_APPS_IPC_SHM_GROUP,
                                   NETDATA_EBPF_CHART_TYPE_STACKED,
@@ -741,37 +920,37 @@ static void ebpf_create_systemd_shm_charts(int update_every)
 static void ebpf_send_systemd_shm_charts()
 {
     ebpf_cgroup_target_t *ect;
-    write_begin_chart(NETDATA_SERVICE_FAMILY, NETDATA_SHMGET_CHART);
+    ebpf_write_begin_chart(NETDATA_SERVICE_FAMILY, NETDATA_SHMGET_CHART, "");
     for (ect = ebpf_cgroup_pids; ect; ect = ect->next) {
         if (unlikely(ect->systemd) && unlikely(ect->updated)) {
             write_chart_dimension(ect->name, (long long)ect->publish_shm.get);
         }
     }
-    write_end_chart();
+    ebpf_write_end_chart();
 
-    write_begin_chart(NETDATA_SERVICE_FAMILY, NETDATA_SHMAT_CHART);
+    ebpf_write_begin_chart(NETDATA_SERVICE_FAMILY, NETDATA_SHMAT_CHART, "");
     for (ect = ebpf_cgroup_pids; ect; ect = ect->next) {
         if (unlikely(ect->systemd) && unlikely(ect->updated)) {
             write_chart_dimension(ect->name, (long long)ect->publish_shm.at);
         }
     }
-    write_end_chart();
+    ebpf_write_end_chart();
 
-    write_begin_chart(NETDATA_SERVICE_FAMILY, NETDATA_SHMDT_CHART);
+    ebpf_write_begin_chart(NETDATA_SERVICE_FAMILY, NETDATA_SHMDT_CHART, "");
     for (ect = ebpf_cgroup_pids; ect; ect = ect->next) {
         if (unlikely(ect->systemd) && unlikely(ect->updated)) {
             write_chart_dimension(ect->name, (long long)ect->publish_shm.dt);
         }
     }
-    write_end_chart();
+    ebpf_write_end_chart();
 
-    write_begin_chart(NETDATA_SERVICE_FAMILY, NETDATA_SHMCTL_CHART);
+    ebpf_write_begin_chart(NETDATA_SERVICE_FAMILY, NETDATA_SHMCTL_CHART, "");
     for (ect = ebpf_cgroup_pids; ect; ect = ect->next) {
         if (unlikely(ect->systemd) && unlikely(ect->updated)) {
             write_chart_dimension(ect->name, (long long)ect->publish_shm.ctl);
         }
     }
-    write_end_chart();
+    ebpf_write_end_chart();
 }
 
 /*
@@ -784,21 +963,21 @@ static void ebpf_send_systemd_shm_charts()
  */
 static void ebpf_send_specific_shm_data(char *type, netdata_publish_shm_t *values)
 {
-    write_begin_chart(type, NETDATA_SHMGET_CHART);
+    ebpf_write_begin_chart(type, NETDATA_SHMGET_CHART, "");
     write_chart_dimension(shm_publish_aggregated[NETDATA_KEY_SHMGET_CALL].name, (long long)values->get);
-    write_end_chart();
+    ebpf_write_end_chart();
 
-    write_begin_chart(type, NETDATA_SHMAT_CHART);
+    ebpf_write_begin_chart(type, NETDATA_SHMAT_CHART, "");
     write_chart_dimension(shm_publish_aggregated[NETDATA_KEY_SHMAT_CALL].name, (long long)values->at);
-    write_end_chart();
+    ebpf_write_end_chart();
 
-    write_begin_chart(type, NETDATA_SHMDT_CHART);
+    ebpf_write_begin_chart(type, NETDATA_SHMDT_CHART, "");
     write_chart_dimension(shm_publish_aggregated[NETDATA_KEY_SHMDT_CALL].name, (long long)values->dt);
-    write_end_chart();
+    ebpf_write_end_chart();
 
-    write_begin_chart(type, NETDATA_SHMCTL_CHART);
+    ebpf_write_begin_chart(type, NETDATA_SHMCTL_CHART, "");
     write_chart_dimension(shm_publish_aggregated[NETDATA_KEY_SHMCTL_CALL].name, (long long)values->ctl);
-    write_end_chart();
+    ebpf_write_end_chart();
 }
 
 /**
@@ -859,14 +1038,18 @@ static void shm_collector(ebpf_module_t *em)
     heartbeat_init(&hb);
     int counter = update_every - 1;
     int maps_per_core = em->maps_per_core;
-    while (!ebpf_exit_plugin) {
+    uint32_t running_time = 0;
+    uint32_t lifetime = em->lifetime;
+    netdata_idx_t *stats = em->hash_table_stats;
+    memset(stats, 0, sizeof(em->hash_table_stats));
+    while (!ebpf_plugin_exit && running_time < lifetime) {
         (void)heartbeat_next(&hb, USEC_PER_SEC);
-        if (ebpf_exit_plugin || ++counter != update_every)
+        if (ebpf_plugin_exit || ++counter != update_every)
             continue;
 
         counter = 0;
         netdata_apps_integration_flags_t apps = em->apps_charts;
-        ebpf_shm_read_global_table(maps_per_core);
+        ebpf_shm_read_global_table(stats, maps_per_core);
         pthread_mutex_lock(&collect_data_mutex);
         if (apps) {
             read_shm_apps_table(maps_per_core);
@@ -895,6 +1078,15 @@ static void shm_collector(ebpf_module_t *em)
 
         pthread_mutex_unlock(&lock);
         pthread_mutex_unlock(&collect_data_mutex);
+
+        pthread_mutex_lock(&ebpf_exit_cleanup);
+        if (running_time && !em->running_time)
+            running_time = update_every;
+        else
+            running_time += update_every;
+
+        em->running_time = running_time;
+        pthread_mutex_unlock(&ebpf_exit_cleanup);
     }
 }
 
@@ -912,41 +1104,74 @@ static void shm_collector(ebpf_module_t *em)
 void ebpf_shm_create_apps_charts(struct ebpf_module *em, void *ptr)
 {
     struct ebpf_target *root = ptr;
-    ebpf_create_charts_on_apps(NETDATA_SHMGET_CHART,
-                               "Calls to syscall <code>shmget(2)</code>.",
-                               EBPF_COMMON_DIMENSION_CALL,
-                               NETDATA_APPS_IPC_SHM_GROUP,
-                               NETDATA_EBPF_CHART_TYPE_STACKED,
-                               20191,
-                               ebpf_algorithms[NETDATA_EBPF_INCREMENTAL_IDX],
-                               root, em->update_every, NETDATA_EBPF_MODULE_NAME_SHM);
+    struct ebpf_target *w;
+    int update_every = em->update_every;
+    for (w = root; w; w = w->next) {
+        if (unlikely(!w->exposed))
+            continue;
 
-    ebpf_create_charts_on_apps(NETDATA_SHMAT_CHART,
-                               "Calls to syscall <code>shmat(2)</code>.",
-                               EBPF_COMMON_DIMENSION_CALL,
-                               NETDATA_APPS_IPC_SHM_GROUP,
-                               NETDATA_EBPF_CHART_TYPE_STACKED,
-                               20192,
-                               ebpf_algorithms[NETDATA_EBPF_INCREMENTAL_IDX],
-                               root, em->update_every, NETDATA_EBPF_MODULE_NAME_SHM);
+        ebpf_write_chart_cmd(NETDATA_APP_FAMILY,
+                             w->clean_name,
+                             "_ebpf_shmget_call",
+                             "Calls to syscall shmget(2).",
+                             EBPF_COMMON_DIMENSION_CALL,
+                             NETDATA_APPS_IPC_SHM_GROUP,
+                             NETDATA_EBPF_CHART_TYPE_STACKED,
+                             "app.ebpf_shmget_call",
+                             20191,
+                             update_every,
+                             NETDATA_EBPF_MODULE_NAME_SHM);
+        ebpf_create_chart_labels("app_group", w->name, 1);
+        ebpf_commit_label();
+        fprintf(stdout, "DIMENSION calls '' %s 1 1\n", ebpf_algorithms[NETDATA_EBPF_INCREMENTAL_IDX]);
 
-    ebpf_create_charts_on_apps(NETDATA_SHMDT_CHART,
-                               "Calls to syscall <code>shmdt(2)</code>.",
-                               EBPF_COMMON_DIMENSION_CALL,
-                               NETDATA_APPS_IPC_SHM_GROUP,
-                               NETDATA_EBPF_CHART_TYPE_STACKED,
-                               20193,
-                               ebpf_algorithms[NETDATA_EBPF_INCREMENTAL_IDX],
-                               root, em->update_every, NETDATA_EBPF_MODULE_NAME_SHM);
+        ebpf_write_chart_cmd(NETDATA_APP_FAMILY,
+                             w->clean_name,
+                             "_ebpf_shmat_call",
+                             "Calls to syscall shmat(2).",
+                             EBPF_COMMON_DIMENSION_CALL,
+                             NETDATA_APPS_IPC_SHM_GROUP,
+                             NETDATA_EBPF_CHART_TYPE_STACKED,
+                             "app.ebpf_shmat_call",
+                             20192,
+                             update_every,
+                             NETDATA_EBPF_MODULE_NAME_SHM);
+        ebpf_create_chart_labels("app_group", w->name, 1);
+        ebpf_commit_label();
+        fprintf(stdout, "DIMENSION calls '' %s 1 1\n", ebpf_algorithms[NETDATA_EBPF_INCREMENTAL_IDX]);
 
-    ebpf_create_charts_on_apps(NETDATA_SHMCTL_CHART,
-                               "Calls to syscall <code>shmctl(2)</code>.",
-                               EBPF_COMMON_DIMENSION_CALL,
-                               NETDATA_APPS_IPC_SHM_GROUP,
-                               NETDATA_EBPF_CHART_TYPE_STACKED,
-                               20194,
-                               ebpf_algorithms[NETDATA_EBPF_INCREMENTAL_IDX],
-                               root, em->update_every, NETDATA_EBPF_MODULE_NAME_SHM);
+        ebpf_write_chart_cmd(NETDATA_APP_FAMILY,
+                             w->clean_name,
+                             "_ebpf_shmdt_call",
+                             "Calls to syscall shmdt(2).",
+                             EBPF_COMMON_DIMENSION_CALL,
+                             NETDATA_APPS_IPC_SHM_GROUP,
+                             NETDATA_EBPF_CHART_TYPE_STACKED,
+                             "app.ebpf_shmdt_call",
+                             20193,
+                             update_every,
+                             NETDATA_EBPF_MODULE_NAME_SHM);
+        ebpf_create_chart_labels("app_group", w->name, 1);
+        ebpf_commit_label();
+        fprintf(stdout, "DIMENSION calls '' %s 1 1\n", ebpf_algorithms[NETDATA_EBPF_INCREMENTAL_IDX]);
+
+        ebpf_write_chart_cmd(NETDATA_APP_FAMILY,
+                             w->clean_name,
+                             "_ebpf_shmctl_call",
+                             "Calls to syscall shmctl(2).",
+                             EBPF_COMMON_DIMENSION_CALL,
+                             NETDATA_APPS_IPC_SHM_GROUP,
+                             NETDATA_EBPF_CHART_TYPE_STACKED,
+                             "app.ebpf_shmctl_call",
+                             20194,
+                             update_every,
+                             NETDATA_EBPF_MODULE_NAME_SHM);
+        ebpf_create_chart_labels("app_group", w->name, 1);
+        ebpf_commit_label();
+        fprintf(stdout, "DIMENSION calls '' %s 1 1\n", ebpf_algorithms[NETDATA_EBPF_INCREMENTAL_IDX]);
+
+        w->charts_created |= 1<<EBPF_MODULE_SHM_IDX;
+    }
 
     em->apps_charts |= NETDATA_EBPF_APPS_FLAG_CHART_CREATED;
 }
@@ -1037,7 +1262,7 @@ static int ebpf_shm_load_bpf(ebpf_module_t *em)
 
 
     if (ret)
-        error("%s %s", EBPF_DEFAULT_ERROR_MSG, em->thread_name);
+        netdata_log_error("%s %s", EBPF_DEFAULT_ERROR_MSG, em->info.thread_name);
 
     return ret;
 }
@@ -1084,10 +1309,10 @@ void *ebpf_shm_thread(void *ptr)
     pthread_mutex_lock(&lock);
     ebpf_create_shm_charts(em->update_every);
     ebpf_update_stats(&plugin_statistics, em);
-    ebpf_update_kernel_memory_with_vector(&plugin_statistics, em->maps);
+    ebpf_update_kernel_memory_with_vector(&plugin_statistics, em->maps, EBPF_ACTION_STAT_ADD);
 #ifdef NETDATA_DEV_MODE
     if (ebpf_aral_shm_pid)
-        ebpf_statistic_create_aral_chart(NETDATA_EBPF_SHM_ARAL_NAME, em);
+        shm_disable_priority = ebpf_statistic_create_aral_chart(NETDATA_EBPF_SHM_ARAL_NAME, em);
 #endif
 
     pthread_mutex_unlock(&lock);

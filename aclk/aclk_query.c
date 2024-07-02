@@ -6,7 +6,6 @@
 #include "../../web/server/web_client_cache.h"
 
 #define WEB_HDR_ACCEPT_ENC "Accept-Encoding:"
-#define ACLK_MAX_WEB_RESPONSE_SIZE (30 * 1024 * 1024)
 
 pthread_cond_t query_cond_wait = PTHREAD_COND_INITIALIZER;
 pthread_mutex_t query_lock_wait = PTHREAD_MUTEX_INITIALIZER;
@@ -90,6 +89,12 @@ static bool aclk_web_client_interrupt_cb(struct web_client *w __maybe_unused, vo
 }
 
 static int http_api_v2(struct aclk_query_thread *query_thr, aclk_query_t query) {
+    ND_LOG_STACK lgs[] = {
+            ND_LOG_FIELD_TXT(NDF_SRC_TRANSPORT, "aclk"),
+            ND_LOG_FIELD_END(),
+    };
+    ND_LOG_STACK_PUSH(lgs);
+
     int retval = 0;
     BUFFER *local_buffer = NULL;
     size_t size = 0;
@@ -110,9 +115,9 @@ static int http_api_v2(struct aclk_query_thread *query_thr, aclk_query_t query) 
     usec_t t;
     web_client_timeout_checkpoint_set(w, query->timeout);
     if(web_client_timeout_checkpoint_and_check(w, &t)) {
-        log_access("QUERY CANCELED: QUEUE TIME EXCEEDED %llu ms (LIMIT %d ms)", t / USEC_PER_MS, query->timeout);
+        nd_log(NDLS_ACCESS, NDLP_ERR, "QUERY CANCELED: QUEUE TIME EXCEEDED %llu ms (LIMIT %d ms)", t / USEC_PER_MS, query->timeout);
         retval = 1;
-        w->response.code = HTTP_RESP_BACKEND_FETCH_FAILED;
+        w->response.code = HTTP_RESP_SERVICE_UNAVAILABLE;
         aclk_http_msg_v2_err(query_thr->client, query->callback_topic, query->msg_id, w->response.code, CLOUD_EC_SND_TIMEOUT, CLOUD_EMSG_SND_TIMEOUT, NULL, 0);
         goto cleanup;
     }
@@ -128,15 +133,8 @@ static int http_api_v2(struct aclk_query_thread *query_thr, aclk_query_t query) 
         ACLK_STATS_UNLOCK;
     }
 
-    w->response.code = web_client_api_request_with_node_selection(localhost, w, path);
+    w->response.code = (short)web_client_api_request_with_node_selection(localhost, w, path);
     web_client_timeout_checkpoint_response_ready(w, &t);
-
-    if(buffer_strlen(w->response.data) > ACLK_MAX_WEB_RESPONSE_SIZE) {
-        buffer_flush(w->response.data);
-        buffer_strcat(w->response.data, "response is too big");
-        w->response.data->content_type = CT_TEXT_PLAIN;
-        w->response.code = HTTP_RESP_CONTENT_TOO_LONG;
-    }
 
     if (aclk_stats_enabled) {
         ACLK_STATS_LOCK;
@@ -164,7 +162,7 @@ static int http_api_v2(struct aclk_query_thread *query_thr, aclk_query_t query) 
                 w->response.zinitialized = true;
                 w->response.zoutput = true;
             } else
-                error("Failed to initialize zlib. Proceeding without compression.");
+                netdata_log_error("Failed to initialize zlib. Proceeding without compression.");
         }
     }
 
@@ -177,9 +175,9 @@ static int http_api_v2(struct aclk_query_thread *query_thr, aclk_query_t query) 
             z_ret = deflate(&w->response.zstream, Z_FINISH);
             if(z_ret < 0) {
                 if(w->response.zstream.msg)
-                    error("Error compressing body. ZLIB error: \"%s\"", w->response.zstream.msg);
+                    netdata_log_error("Error compressing body. ZLIB error: \"%s\"", w->response.zstream.msg);
                 else
-                    error("Unknown error during zlib compression.");
+                    netdata_log_error("Unknown error during zlib compression.");
                 retval = 1;
                 w->response.code = 500;
                 aclk_http_msg_v2_err(query_thr->client, query->callback_topic, query->msg_id, w->response.code, CLOUD_EC_ZLIB_ERROR, CLOUD_EMSG_ZLIB_ERROR, NULL, 0);
@@ -197,7 +195,6 @@ static int http_api_v2(struct aclk_query_thread *query_thr, aclk_query_t query) 
         z_buffer = NULL;
     }
 
-    w->response.data->date = w->timings.tv_ready.tv_sec;
     web_client_build_http_header(w);
     local_buffer = buffer_create(NETDATA_WEB_RESPONSE_INITIAL_SIZE, &netdata_buffers_statistics.buffers_aclk);
     local_buffer->content_type = CT_APPLICATION_JSON;
@@ -218,25 +215,8 @@ static int http_api_v2(struct aclk_query_thread *query_thr, aclk_query_t query) 
     // send msg.
     w->response.code = aclk_http_msg_v2(query_thr->client, query->callback_topic, query->msg_id, t, query->created, w->response.code, local_buffer->buffer, local_buffer->len);
 
-    struct timeval tv;
-
 cleanup:
-    now_monotonic_high_precision_timeval(&tv);
-    log_access("%llu: %d '[ACLK]:%d' '%s' (sent/all = %zu/%zu bytes %0.0f%%, prep/sent/total = %0.2f/%0.2f/%0.2f ms) %d '%s'",
-        w->id
-        , gettid()
-        , query_thr->idx
-        , "DATA"
-        , sent
-        , size
-        , size > sent ? -(((size - sent) / (double)size) * 100.0) : ((size > 0) ? (((sent - size ) / (double)size) * 100.0) : 0.0)
-        , dt_usec(&w->timings.tv_ready, &w->timings.tv_in) / 1000.0
-        , dt_usec(&tv, &w->timings.tv_ready) / 1000.0
-        , dt_usec(&tv, &w->timings.tv_in) / 1000.0
-        , w->response.code
-        , strip_control_characters((char *)buffer_tostring(w->url_as_received))
-    );
-
+    web_client_log_completed_request(w, false);
     web_client_release_to_cache(w);
 
     pending_req_list_rm(query->msg_id);
@@ -286,10 +266,10 @@ static void aclk_query_process_msg(struct aclk_query_thread *query_thr, aclk_que
 
     worker_is_busy(query->type);
     if (query->type == HTTP_API_V2) {
-        debug(D_ACLK, "Processing Queued Message of type: \"http_api_request_v2\"");
+        netdata_log_debug(D_ACLK, "Processing Queued Message of type: \"http_api_request_v2\"");
         http_api_v2(query_thr, query);
     } else {
-        debug(D_ACLK, "Processing Queued Message of type: \"%s\"", query->data.bin_payload.msg_name);
+        netdata_log_debug(D_ACLK, "Processing Queued Message of type: \"%s\"", query->data.bin_payload.msg_name);
         send_bin_msg(query_thr, query);
     }
 
@@ -357,7 +337,7 @@ void *aclk_query_main_thread(void *ptr)
 #define TASK_LEN_MAX 22
 void aclk_query_threads_start(struct aclk_query_threads *query_threads, mqtt_wss_client client)
 {
-    info("Starting %d query threads.", query_threads->count);
+    netdata_log_info("Starting %d query threads.", query_threads->count);
 
     char thread_name[TASK_LEN_MAX];
     query_threads->thread_list = callocz(query_threads->count, sizeof(struct aclk_query_thread));
@@ -366,7 +346,7 @@ void aclk_query_threads_start(struct aclk_query_threads *query_threads, mqtt_wss
         query_threads->thread_list[i].client = client;
 
         if(unlikely(snprintfz(thread_name, TASK_LEN_MAX, "ACLK_QRY[%d]", i) < 0))
-            error("snprintf encoding error");
+            netdata_log_error("snprintf encoding error");
         netdata_thread_create(
             &query_threads->thread_list[i].thread, thread_name, NETDATA_THREAD_OPTION_JOINABLE, aclk_query_main_thread,
             &query_threads->thread_list[i]);
