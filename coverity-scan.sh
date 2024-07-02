@@ -40,7 +40,7 @@ set -e
 INSTALL_DIR="/opt"
 
 # the version of coverity to use
-COVERITY_BUILD_VERSION="${COVERITY_BUILD_VERSION:-cov-analysis-linux64-2022.12.2}"
+COVERITY_BUILD_VERSION="${COVERITY_BUILD_VERSION:-cov-analysis-linux64-2023.6.2}"
 
 # TODO: For some reasons this does not fully load on Debian 10 (Haven't checked if it happens on other distros yet), it breaks
 source packaging/installer/functions.sh || echo "Failed to fully load the functions library"
@@ -173,7 +173,8 @@ installit() {
 OTHER_OPTIONS="--disable-lto"
 OTHER_OPTIONS+=" --with-zlib"
 OTHER_OPTIONS+=" --with-math"
-OTHER_OPTIONS+=" --enable-https"
+OTHER_OPTIONS+=" --enable-lz4"
+OTHER_OPTIONS+=" --enable-openssl"
 OTHER_OPTIONS+=" --enable-jsonc"
 OTHER_OPTIONS+=" --enable-plugin-nfacct"
 OTHER_OPTIONS+=" --enable-plugin-freeipmi"

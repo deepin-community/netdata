@@ -144,6 +144,14 @@ SIMPLE_PATTERN *simple_pattern_create(const char *list, const char *separators, 
         m->negative = negative;
         m->case_sensitive = case_sensitive;
 
+        if(default_mode == SIMPLE_PATTERN_SUBSTRING) {
+            m->mode = SIMPLE_PATTERN_SUBSTRING;
+
+            struct simple_pattern *tm = m;
+            for(tm = m; tm->child ; tm = tm->child) ;
+            tm->mode = SIMPLE_PATTERN_SUBSTRING;
+        }
+
         // link it at the end
         if(unlikely(!root))
             root = last = m;
@@ -326,10 +334,10 @@ extern void simple_pattern_dump(uint64_t debug_type, SIMPLE_PATTERN *p)
 {
     struct simple_pattern *root = (struct simple_pattern *)p;
     if(root==NULL) {
-        debug(debug_type,"dump_pattern(NULL)");
+        netdata_log_debug(debug_type,"dump_pattern(NULL)");
         return;
     }
-    debug(debug_type,"dump_pattern(%p) child=%p next=%p mode=%u match=%s", root, root->child, root->next, root->mode,
+    netdata_log_debug(debug_type,"dump_pattern(%p) child=%p next=%p mode=%u match=%s", root, root->child, root->next, root->mode,
           root->match);
     if(root->child!=NULL)
         simple_pattern_dump(debug_type, (SIMPLE_PATTERN*)root->child);

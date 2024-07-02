@@ -140,6 +140,12 @@ netdataDashboard.menu = {
         info: 'Detailed information for each CPU of the system. A summary of the system for all CPUs can be found at the <a href="#menu_system">System Overview</a> section.'
     },
 
+    'amdgpu': {
+        title: 'AMD GPUs',
+        icon: '<i class="fas fa-microchip"></i>',
+        info: 'Detailed information for each AMD GPU of the system. Temperature, fan speed, voltage and power metrics can be found at the <a href="#menu_sensors">Sensors</a> section.'
+    },
+
     'mem': {
         title: 'Memory',
         icon: '<i class="fas fa-microchip"></i>',
@@ -774,6 +780,49 @@ netdataDashboard.menu = {
         title: 'Consul',
         icon: '<i class="fas fa-circle-notch"></i>',
         info: 'Consul performance and health metrics. For details, see <a href="https://developer.hashicorp.com/consul/docs/agent/telemetry#key-metrics" target="_blank">Key Metrics</a>.'
+    },
+
+    'kmsg Logs': {
+        title: 'kmsg Logs',
+        icon: '<i class="fas fa-book"></i>',
+        info: 'Metrics extracted from log messages collected from the Kernel log buffer. For details, see <a href="https://docs.fluentbit.io/manual/pipeline/inputs/kernel-logs" target="_blank">the Fluent Bit Kernel Logs plugin</a>.'
+    },
+
+    'Systemd Logs': {
+        title: 'Systemd Logs',
+        icon: '<i class="fas fa-book"></i>',
+        info: 'Metrics extracted from log messages collected from the Journald daemon. For details, see <a href="https://docs.fluentbit.io/manual/pipeline/inputs/systemd" target="_blank">the Fluent Bit Systemd plugin</a>.'
+    },
+
+    'docker_events_logs': {
+        title: 'Docker Events Logs',
+        icon: '<i class="fas fa-book"></i>',
+        info: 'Docker server events metrics. For details, see <a href="https://docs.fluentbit.io/manual/pipeline/inputs/docker-events" target="_blank">the Fluent Bit Docker Events plugin</a> ' +
+        'and <a href="https://docs.docker.com/engine/reference/commandline/events/" target="_blank">the official Docker Events documentation</a>.'
+    },
+
+    'Apache access.log': {
+        title: 'Apache access.log',
+        icon: '<i class="fas fa-book"></i>',
+        info: 'Performance metrics exctracted from the Apache server <b>access.log</b>. If Go plugins are enabled, see also <a href="#menu_web_log_apache" target="_blank">the web log apache collector</a>.'
+    },
+
+    'Nginx access.log': {
+        title: 'Nginx access.log',
+        icon: '<i class="fas fa-book"></i>',
+        info: 'Performance metrics exctracted from the Nginx server <b>access.log</b>. If Go plugins are enabled, see also <a href="#menu_web_log_nginx" target="_blank">the web log nginx collector</a>.'
+    },
+
+    'Netdata error.log': {
+        title: 'Netdata error.log',
+        icon: '<i class="fas fa-book"></i>',
+        info: 'Metrics extracted from Netdata\'s error.log.'
+    },
+
+    'Netdata fluentbit.log': {
+        title: 'Netdata fluentbit.log',
+        icon: '<i class="fas fa-book"></i>',
+        info: 'Metrics extracted from Netdata\'s embedded Fluent Bit logs.'
     }
 };
 
@@ -1177,6 +1226,10 @@ netdataDashboard.submenu = {
         info: 'A connection is an established line of communication between a client and the PostgreSQL server. Each connection adds to the load on the PostgreSQL server. To guard against running out of memory or overloading the database the <i>max_connections</i> parameter (default = 100) defines the maximum number of concurrent connections to the database server. A separate parameter, <i>superuser_reserved_connections</i> (default = 3), defines the quota for superuser connections (so that superusers can connect even if all other connection slots are blocked).'
     },
 
+    'system.power_consumption': {
+        info: 'The current power consumption of the zones defined by the <a href="https://www.kernel.org/doc/html/next/power/powercap/powercap.html" target="_blank">power capping framework</a>.'
+    }
+
 };
 
 // ----------------------------------------------------------------------------
@@ -1520,7 +1573,7 @@ netdataDashboard.context = {
         info: 'Memory paged from/to disk. This is usually the total disk I/O of the system.'
     },
 
-    'system.swapio': {
+    'mem.swapio': {
         info: '<p>System swap I/O.</p>'+
         '<b>In</b> - pages the system has swapped in from disk to RAM. '+
         '<b>Out</b> - pages the system has swapped out from RAM to disk.'
@@ -1665,7 +1718,7 @@ netdataDashboard.context = {
         info: 'System Random Access Memory (i.e. physical memory) usage.'
     },
 
-    'system.swap': {
+    'mem.swap': {
         info: 'System swap memory usage. Swap space is used when the amount of physical memory (RAM) is full. When the system needs more memory resources and the RAM is full, inactive pages in memory are moved to the swap space (usually a disk, a disk partition or a file).'
     },
 
@@ -1728,6 +1781,10 @@ netdataDashboard.context = {
     'system.process_status': {
         title : 'Task status',
         info: 'Difference between the number of calls to <a href="https://learn.netdata.cloud/docs/agent/collectors/ebpf.plugin#process-exit" target="_blank">functions</a> that close a task and release a task.'+ ebpfChartProvides
+    },
+
+    'system.power_consumption': {
+        info: 'The current power consumption of the zones defined by the <a href="https://www.kernel.org/doc/html/next/power/powercap/powercap.html" target="_blank">power capping framework</a>.'
     },
 
     // ------------------------------------------------------------------------
@@ -4935,7 +4992,11 @@ netdataDashboard.context = {
     },
 
     'netdata.ebpf_threads': {
-        info: 'Show total number of threads and number of active threads. For more details about the threads, see the <a href="https://learn.netdata.cloud/docs/agent/collectors/ebpf.plugin#ebpf-programs-configuration-options" target="_blank">official documentation</a>.'
+        info: 'Show thread status. Threads running have value 1 an stopped value 0. For more details about the threads, see the <a href="https://learn.netdata.cloud/docs/agent/collectors/ebpf.plugin#ebpf-programs-configuration-options" target="_blank">official documentation</a>.'
+    },
+
+    'netdata.ebpf_life_time': {
+        info: 'Time remaining for thread shutdown itself.'
     },
 
     'netdata.ebpf_load_methods': {
@@ -8190,6 +8251,14 @@ netdataDashboard.context = {
     'nvme.device_thermal_mgmt_temp2_time': {
         info: 'The amount of time the controller has entered lower active power states or performed vendor-specific thermal management actions, <b>regardless of the impact on performance (e.g., heavy throttling)</b>, to attempt to lower the Combined Temperature due to the host-managed thermal management feature.'
     },
+
+    // ------------------------------------------------------------------------
+    // Logs Management
+
+    'docker_events_logs.events_type': {
+        info: 'The Docker object type of the event. See <a href="https://docs.docker.com/engine/reference/commandline/events/#description" target="_blank">here</a> for more information.'
+    },
+
     // ------------------------------------------------------------------------
 
 };

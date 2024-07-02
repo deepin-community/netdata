@@ -11,6 +11,21 @@ extern "C" {
 #include <config.h>
 #endif
 
+#if defined(ENABLE_BROTLIENC) && defined(ENABLE_BROTLIDEC)
+#define ENABLE_BROTLI 1
+#endif
+
+#ifdef ENABLE_OPENSSL
+#define ENABLE_HTTPS 1
+#endif
+
+#ifdef HAVE_LIBDATACHANNEL
+#define ENABLE_WEBRTC 1
+#endif
+
+#define STRINGIFY(x) #x
+#define TOSTRING(x) STRINGIFY(x)
+
 #define JUDYHS_INDEX_SIZE_ESTIMATE(key_bytes) (((key_bytes) + sizeof(Word_t) - 1) / sizeof(Word_t) * 4)
 
 #if defined(NETDATA_DEV_MODE) && !defined(NETDATA_INTERNAL_CHECKS)
@@ -186,6 +201,8 @@ extern "C" {
 // ----------------------------------------------------------------------------
 // netdata common definitions
 
+#define _cleanup_(x) __attribute__((__cleanup__(x)))
+
 #ifdef __GNUC__
 #define GCC_VERSION (__GNUC__ * 10000 + __GNUC_MINOR__ * 100 + __GNUC_PATCHLEVEL__)
 #endif // __GNUC__
@@ -256,16 +273,17 @@ size_t judy_aral_structures(void);
 
 #define DOUBLE_LINKED_LIST_APPEND_ITEM_UNSAFE(head, item, prev, next)                          \
     do {                                                                                       \
+                                                                                               \
+        (item)->next = NULL;                                                                   \
+                                                                                               \
         if(likely(head)) {                                                                     \
             (item)->prev = (head)->prev;                                                       \
             (head)->prev->next = (item);                                                       \
             (head)->prev = (item);                                                             \
-            (item)->next = NULL;                                                               \
         }                                                                                      \
         else {                                                                                 \
+            (item)->prev = (item);                                                             \
             (head) = (item);                                                                   \
-            (head)->prev = (head);                                                             \
-            (head)->next = NULL;                                                               \
         }                                                                                      \
                                                                                                \
     } while (0)
@@ -543,7 +561,7 @@ extern int enable_ksm;
 
 char *fgets_trim_len(char *buf, size_t buf_size, FILE *fp, size_t *len);
 
-int verify_netdata_host_prefix();
+int verify_netdata_host_prefix(bool log_msg);
 
 int recursively_delete_dir(const char *path, const char *reason);
 
@@ -562,7 +580,7 @@ void recursive_config_double_dir_load(
         , void *data
         , size_t depth
 );
-char *read_by_filename(char *filename, long *file_size);
+char *read_by_filename(const char *filename, long *file_size);
 char *find_and_replace(const char *src, const char *find, const char *replace, const char *where);
 
 /* fix for alpine linux */
@@ -585,34 +603,93 @@ char *find_and_replace(const char *src, const char *find, const char *replace, c
 #define UNUSED_FUNCTION(x) UNUSED_##x
 #endif
 
-#define error_report(x, args...) do { errno = 0; error(x, ##args); } while(0)
+#define error_report(x, args...) do { errno = 0; netdata_log_error(x, ##args); } while(0)
 
 // Taken from linux kernel
 #define BUILD_BUG_ON(condition) ((void)sizeof(char[1 - 2*!!(condition)]))
 
+#ifdef ENV32BIT
+
+typedef struct bitmapX {
+    uint32_t bits;
+    uint32_t data[];
+} BITMAPX;
+
 typedef struct bitmap256 {
-    uint64_t data[4];
+    uint32_t bits;
+    uint32_t data[256 / 32];
 } BITMAP256;
 
-bool bitmap256_get_bit(BITMAP256 *ptr, uint8_t idx);
-void bitmap256_set_bit(BITMAP256 *ptr, uint8_t idx, bool value);
+typedef struct bitmap1024 {
+    uint32_t bits;
+    uint32_t data[1024 / 32];
+} BITMAP1024;
 
-#define COMPRESSION_MAX_MSG_SIZE 0x4000
-#define PLUGINSD_LINE_MAX (COMPRESSION_MAX_MSG_SIZE - 1024)
-int config_isspace(char c);
-int pluginsd_space(char c);
-
-size_t quoted_strings_splitter(char *str, char **words, size_t max_words, int (*custom_isspace)(char));
-size_t pluginsd_split_words(char *str, char **words, size_t max_words);
-
-static inline char *get_word(char **words, size_t num_words, size_t index) {
-    if (index >= num_words)
-        return NULL;
-
-    return words[index];
+static inline BITMAPX *bitmapX_create(uint32_t bits) {
+    BITMAPX *bmp = (BITMAPX *)callocz(1, sizeof(BITMAPX) + sizeof(uint32_t) * ((bits + 31) / 32));
+    uint32_t *p = (uint32_t *)&bmp->bits;
+    *p = bits;
+    return bmp;
 }
 
+#define bitmapX_get_bit(ptr, idx) ((ptr)->data[(idx) >> 5] & (1U << ((idx) & 31)))
+#define bitmapX_set_bit(ptr, idx, value) do {           \
+    register uint32_t _bitmask = 1U << ((idx) & 31);    \
+    if (value)                                          \
+        (ptr)->data[(idx) >> 5] |= _bitmask;            \
+    else                                                \
+        (ptr)->data[(idx) >> 5] &= ~_bitmask;           \
+} while(0)
+
+#else // 64bit version of bitmaps
+
+typedef struct bitmapX {
+    uint32_t bits;
+    uint64_t data[];
+} BITMAPX;
+
+typedef struct bitmap256 {
+    uint32_t bits;
+    uint64_t data[256 / 64];
+} BITMAP256;
+
+typedef struct bitmap1024 {
+    uint32_t bits;
+    uint64_t data[1024 / 64];
+} BITMAP1024;
+
+static inline BITMAPX *bitmapX_create(uint32_t bits) {
+    BITMAPX *bmp = (BITMAPX *)callocz(1, sizeof(BITMAPX) + sizeof(uint64_t) * ((bits + 63) / 64));
+    bmp->bits = bits;
+    return bmp;
+}
+
+#define bitmapX_get_bit(ptr, idx) ((ptr)->data[(idx) >> 6] & (1ULL << ((idx) & 63)))
+#define bitmapX_set_bit(ptr, idx, value) do {           \
+    register uint64_t _bitmask = 1ULL << ((idx) & 63);  \
+    if (value)                                          \
+        (ptr)->data[(idx) >> 6] |= _bitmask;            \
+    else                                                \
+        (ptr)->data[(idx) >> 6] &= ~_bitmask;           \
+} while(0)
+
+#endif // 64bit version of bitmaps
+
+#define BITMAPX_INITIALIZER(wanted_bits) { .bits = (wanted_bits), .data = {0} }
+#define BITMAP256_INITIALIZER (BITMAP256)BITMAPX_INITIALIZER(256)
+#define BITMAP1024_INITIALIZER (BITMAP1024)BITMAPX_INITIALIZER(1024)
+#define bitmap256_get_bit(ptr, idx) bitmapX_get_bit((BITMAPX *)ptr, idx)
+#define bitmap256_set_bit(ptr, idx, value) bitmapX_set_bit((BITMAPX *)ptr, idx, value)
+#define bitmap1024_get_bit(ptr, idx) bitmapX_get_bit((BITMAPX *)ptr, idx)
+#define bitmap1024_set_bit(ptr, idx, value) bitmapX_set_bit((BITMAPX *)ptr, idx, value)
+
+#define COMPRESSION_MAX_CHUNK 0x4000
+#define COMPRESSION_MAX_OVERHEAD 128
+#define COMPRESSION_MAX_MSG_SIZE (COMPRESSION_MAX_CHUNK - COMPRESSION_MAX_OVERHEAD - 1)
+#define PLUGINSD_LINE_MAX (COMPRESSION_MAX_MSG_SIZE - 768)
+
 bool run_command_and_copy_output_to_stdout(const char *command, int max_line_length);
+struct web_buffer *run_command_and_get_output_to_buffer(const char *command, int max_line_length);
 
 typedef enum {
     OPEN_FD_ACTION_CLOSE,
@@ -628,6 +705,12 @@ void for_each_open_fd(OPEN_FD_ACTION action, OPEN_FD_EXCLUDE excluded_fds);
 void netdata_cleanup_and_exit(int ret) NORETURN;
 void send_statistics(const char *action, const char *action_result, const char *action_data);
 extern char *netdata_configured_host_prefix;
+
+#define XXH_INLINE_ALL
+#include "xxhash.h"
+
+#include "uuid/uuid.h"
+
 #include "libjudy/src/Judy.h"
 #include "july/july.h"
 #include "os.h"
@@ -637,7 +720,11 @@ extern char *netdata_configured_host_prefix;
 #include "circular_buffer/circular_buffer.h"
 #include "avl/avl.h"
 #include "inlined.h"
+#include "line_splitter/line_splitter.h"
 #include "clocks/clocks.h"
+#include "datetime/iso8601.h"
+#include "datetime/rfc3339.h"
+#include "datetime/rfc7231.h"
 #include "completion/completion.h"
 #include "popen/popen.h"
 #include "simple_pattern/simple_pattern.h"
@@ -646,7 +733,9 @@ extern char *netdata_configured_host_prefix;
 #endif
 #include "socket/socket.h"
 #include "config/appconfig.h"
+#include "log/journal.h"
 #include "log/log.h"
+#include "buffered_reader/buffered_reader.h"
 #include "procfile/procfile.h"
 #include "string/string.h"
 #include "dictionary/dictionary.h"
@@ -663,10 +752,12 @@ extern char *netdata_configured_host_prefix;
 #include "libnetdata/aral/aral.h"
 #include "onewayalloc/onewayalloc.h"
 #include "worker_utilization/worker_utilization.h"
-#include "parser/parser.h"
 #include "yaml.h"
 #include "http/http_defs.h"
 #include "gorilla/gorilla.h"
+#include "facets/facets.h"
+#include "dyn_conf/dyn_conf.h"
+#include "functions_evloop/functions_evloop.h"
 
 // BEWARE: this exists in alarm-notify.sh
 #define DEFAULT_CLOUD_BASE_URL "https://app.netdata.cloud"
@@ -761,6 +852,32 @@ typedef enum {
     TIMING_STEP_END2_PROPAGATE,
     TIMING_STEP_END2_STORE,
 
+    TIMING_STEP_FREEIPMI_CTX_CREATE,
+    TIMING_STEP_FREEIPMI_DSR_CACHE_DIR,
+    TIMING_STEP_FREEIPMI_SENSOR_CONFIG_FILE,
+    TIMING_STEP_FREEIPMI_SENSOR_READINGS_BY_X,
+    TIMING_STEP_FREEIPMI_READ_record_id,
+    TIMING_STEP_FREEIPMI_READ_sensor_number,
+    TIMING_STEP_FREEIPMI_READ_sensor_type,
+    TIMING_STEP_FREEIPMI_READ_sensor_name,
+    TIMING_STEP_FREEIPMI_READ_sensor_state,
+    TIMING_STEP_FREEIPMI_READ_sensor_units,
+    TIMING_STEP_FREEIPMI_READ_sensor_bitmask_type,
+    TIMING_STEP_FREEIPMI_READ_sensor_bitmask,
+    TIMING_STEP_FREEIPMI_READ_sensor_bitmask_strings,
+    TIMING_STEP_FREEIPMI_READ_sensor_reading_type,
+    TIMING_STEP_FREEIPMI_READ_sensor_reading,
+    TIMING_STEP_FREEIPMI_READ_event_reading_type_code,
+    TIMING_STEP_FREEIPMI_READ_record_type,
+    TIMING_STEP_FREEIPMI_READ_record_type_class,
+    TIMING_STEP_FREEIPMI_READ_sel_state,
+    TIMING_STEP_FREEIPMI_READ_event_direction,
+    TIMING_STEP_FREEIPMI_READ_event_type_code,
+    TIMING_STEP_FREEIPMI_READ_event_offset_type,
+    TIMING_STEP_FREEIPMI_READ_event_offset,
+    TIMING_STEP_FREEIPMI_READ_event_offset_string,
+    TIMING_STEP_FREEIPMI_READ_manufacturer_id,
+
     // terminator
     TIMING_STEP_MAX,
 } TIMING_STEP;
@@ -783,6 +900,15 @@ typedef enum {
 void timing_action(TIMING_ACTION action, TIMING_STEP step);
 
 int hash256_string(const unsigned char *string, size_t size, char *hash);
+
+extern bool unittest_running;
+#define API_RELATIVE_TIME_MAX (3 * 365 * 86400)
+
+bool rrdr_relative_window_to_absolute(time_t *after, time_t *before, time_t now);
+bool rrdr_relative_window_to_absolute_query(time_t *after, time_t *before, time_t *now_ptr, bool unittest_running);
+
+int netdata_base64_decode(const char *encoded, char *decoded, size_t decoded_size);
+
 # ifdef __cplusplus
 }
 # endif

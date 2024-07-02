@@ -1,13 +1,7 @@
-<!--
-title: "Local Agent dashboard"
-description: "The local Netdata Agent dashboard is the heart of health monitoring and performance troubleshooting, with hundreds of real-time charts."
-custom_edit_url: https://github.com/netdata/netdata/edit/master/web/gui/README.md
-sidebar_label: "Local Agent dashboard"
-learn_status: "Published"
-learn_rel_path: "Operations"
--->
+# Legacy Agent dashboard
 
-# Local Agent dashboard
+> ⚠️ You're checking the documentation for the legacy Agent dashboard. For the current version please check [Accessing Netdata Dashboards](https://github.com/netdata/netdata/blob/master/docs/category-overview-pages/accessing-netdata-dashboards.md).
+
 
 The local Netdata Agent dashboard is the heart of Netdata's performance troubleshooting toolkit. You've probably seen it
 before:
@@ -19,8 +13,8 @@ Learn more about how dashboards work and how they're populated using the `dashbo
 overview](https://github.com/netdata/netdata/blob/master/web/README.md).
 
 By default, Netdata starts a web server for its dashboard at port `19999`. Open up your web browser of choice and
-navigate to `http://NODE:19999`, replacing `NODE` with the IP address or hostname of your Agent. If you're unsure, try
-`http://localhost:19999` first.
+navigate to `http://NODE:19999`, replacing `NODE` with the IP address or hostname of your Agent. If installed on localhost,
+you can access it through `http://localhost:19999`.
 
 Netdata uses an [internal, static-threaded web server](https://github.com/netdata/netdata/blob/master/web/server/README.md) to host the HTML, CSS, and JavaScript
 files that make up the local Agent dashboard. You don't have to configure anything to access it, although you can adjust

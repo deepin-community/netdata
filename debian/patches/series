@@ -3,5 +3,4 @@ debian/0002-use-system-exim4.patch
 debian/0003-use-python3.patch
 debian/0004-use-bash.patch
 debian/0005-send-email.patch
-upstream/0001-allow-symlinks.patch
 upstream/0002-fix-FTCBFS.patch

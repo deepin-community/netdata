@@ -48,7 +48,7 @@ void debug_sockets() {
 		buffer_strcat(wb, (api_sockets.fds_acl_flags[i] & WEB_CLIENT_ACL_MGMT)?"management ":"");
 		buffer_strcat(wb, (api_sockets.fds_acl_flags[i] & WEB_CLIENT_ACL_STREAMING)?"streaming ":"");
 		buffer_strcat(wb, (api_sockets.fds_acl_flags[i] & WEB_CLIENT_ACL_NETDATACONF)?"netdata.conf ":"");
-		debug(D_WEB_CLIENT, "Socket fd %d name '%s' acl_flags: %s",
+        netdata_log_debug(D_WEB_CLIENT, "Socket fd %d name '%s' acl_flags: %s",
 			  i,
 			  api_sockets.fds_names[i],
 			  buffer_tostring(wb));
@@ -57,16 +57,16 @@ void debug_sockets() {
 	buffer_free(wb);
 }
 
-void api_listen_sockets_setup(void) {
+bool api_listen_sockets_setup(void) {
 	int socks = listen_sockets_setup(&api_sockets);
 
 	if(!socks)
-		fatal("LISTENER: Cannot listen on any API socket. Exiting...");
+        return false;
 
 	if(unlikely(debug_flags & D_WEB_CLIENT))
 		debug_sockets();
 
-	return;
+	return true;
 }
 
 
@@ -130,5 +130,18 @@ void web_client_update_acl_matches(struct web_client *w) {
 // --------------------------------------------------------------------------------------
 
 void web_server_log_connection(struct web_client *w, const char *msg) {
-    log_access("%llu: %d '[%s]:%s' '%s'", w->id, gettid(), w->client_ip, w->client_port, msg);
+    ND_LOG_STACK lgs[] = {
+            ND_LOG_FIELD_U64(NDF_CONNECTION_ID, w->id),
+#ifdef ENABLE_HTTPS
+            ND_LOG_FIELD_TXT(NDF_SRC_TRANSPORT, SSL_connection(&w->ssl) ? "https" : "http"),
+#else
+            ND_LOG_FIELD_TXT(NDF_SRC_TRANSPORT, "http"),
+#endif
+            ND_LOG_FIELD_TXT(NDF_SRC_IP, w->client_ip),
+            ND_LOG_FIELD_TXT(NDF_SRC_PORT, w->client_port),
+            ND_LOG_FIELD_END(),
+    };
+    ND_LOG_STACK_PUSH(lgs);
+
+    nd_log(NDLS_ACCESS, NDLP_DEBUG, "[%s]:%s %s", w->client_ip, w->client_port, msg);
 }

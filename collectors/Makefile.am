@@ -15,6 +15,7 @@ SUBDIRS = \
     freebsd.plugin \
     freeipmi.plugin \
     idlejitter.plugin \
+    log2journal \
     macos.plugin \
     nfacct.plugin \
     xenstat.plugin \
@@ -25,6 +26,7 @@ SUBDIRS = \
     statsd.plugin \
     ebpf.plugin \
     tc.plugin \
+    systemd-journal.plugin \
     $(NULL)
 
 usercustompluginsconfigdir=$(configdir)/custom-plugins.d

@@ -59,20 +59,15 @@ ebpf_process_stat_t *process_stat_vector = NULL;
 static netdata_syscall_stat_t process_aggregated_data[NETDATA_KEY_PUBLISH_PROCESS_END];
 static netdata_publish_syscall_t process_publish_aggregated[NETDATA_KEY_PUBLISH_PROCESS_END];
 
-int process_enabled = 0;
-bool publish_internal_metrics = true;
-
 struct config process_config = { .first_section = NULL,
     .last_section = NULL,
     .mutex = NETDATA_MUTEX_INITIALIZER,
     .index = { .avl_tree = { .root = NULL, .compar = appconfig_section_compare },
         .rwlock = AVL_LOCK_INITIALIZER } };
 
-static char *threads_stat[NETDATA_EBPF_THREAD_STAT_END] = {"total", "running"};
-static char *load_event_stat[NETDATA_EBPF_LOAD_STAT_END] = {"legacy", "co-re"};
-static char *memlock_stat = {"memory_locked"};
-static char *hash_table_stat = {"hash_table"};
-static char *hash_table_core[NETDATA_EBPF_LOAD_STAT_END] = {"per_core", "unique"};
+#ifdef NETDATA_DEV_MODE
+int process_disable_priority;
+#endif
 
 /*****************************************************************
  *
@@ -121,12 +116,12 @@ static void ebpf_update_global_publish(netdata_publish_syscall_t *publish, netda
  */
 static void write_status_chart(char *family, netdata_publish_vfs_common_t *pvc)
 {
-    write_begin_chart(family, NETDATA_PROCESS_STATUS_NAME);
+    ebpf_write_begin_chart(family, NETDATA_PROCESS_STATUS_NAME, "");
 
     write_chart_dimension(status[0], (long long)pvc->running);
     write_chart_dimension(status[1], (long long)pvc->zombie);
 
-    write_end_chart();
+    ebpf_write_end_chart();
 }
 
 /**
@@ -206,56 +201,43 @@ void ebpf_process_remove_pids()
 void ebpf_process_send_apps_data(struct ebpf_target *root, ebpf_module_t *em)
 {
     struct ebpf_target *w;
-    collected_number value;
+    // This algorithm is improved in https://github.com/netdata/netdata/pull/16030
+    collected_number values[5];
 
-    write_begin_chart(NETDATA_APPS_FAMILY, NETDATA_SYSCALL_APPS_TASK_PROCESS);
     for (w = root; w; w = w->next) {
-        if (unlikely(w->exposed && w->processes)) {
-            value = ebpf_process_sum_values_for_pids(w->root_pid, offsetof(ebpf_process_stat_t, create_process));
-            write_chart_dimension(w->name, value);
-        }
-    }
-    write_end_chart();
+        if (unlikely(!(w->charts_created & (1<<EBPF_MODULE_PROCESS_IDX))))
+            continue;
 
-    write_begin_chart(NETDATA_APPS_FAMILY, NETDATA_SYSCALL_APPS_TASK_THREAD);
-    for (w = root; w; w = w->next) {
-        if (unlikely(w->exposed && w->processes)) {
-            value = ebpf_process_sum_values_for_pids(w->root_pid, offsetof(ebpf_process_stat_t, create_thread));
-            write_chart_dimension(w->name, value);
-        }
-    }
-    write_end_chart();
-
-    write_begin_chart(NETDATA_APPS_FAMILY, NETDATA_SYSCALL_APPS_TASK_EXIT);
-    for (w = root; w; w = w->next) {
-        if (unlikely(w->exposed && w->processes)) {
-            value = ebpf_process_sum_values_for_pids(w->root_pid, offsetof(ebpf_process_stat_t,
+        values[0] = ebpf_process_sum_values_for_pids(w->root_pid, offsetof(ebpf_process_stat_t, create_process));
+        values[1] = ebpf_process_sum_values_for_pids(w->root_pid, offsetof(ebpf_process_stat_t, create_thread));
+        values[2] = ebpf_process_sum_values_for_pids(w->root_pid, offsetof(ebpf_process_stat_t,
                                                                            exit_call));
-            write_chart_dimension(w->name, value);
-        }
-    }
-    write_end_chart();
-
-    write_begin_chart(NETDATA_APPS_FAMILY, NETDATA_SYSCALL_APPS_TASK_CLOSE);
-    for (w = root; w; w = w->next) {
-        if (unlikely(w->exposed && w->processes)) {
-            value = ebpf_process_sum_values_for_pids(w->root_pid, offsetof(ebpf_process_stat_t,
+        values[3] = ebpf_process_sum_values_for_pids(w->root_pid, offsetof(ebpf_process_stat_t,
                                                                            release_call));
-            write_chart_dimension(w->name, value);
-        }
-    }
-    write_end_chart();
+        values[4] = ebpf_process_sum_values_for_pids(w->root_pid, offsetof(ebpf_process_stat_t,
+                                                                           task_err));
 
-    if (em->mode < MODE_ENTRY) {
-        write_begin_chart(NETDATA_APPS_FAMILY, NETDATA_SYSCALL_APPS_TASK_ERROR);
-        for (w = root; w; w = w->next) {
-            if (unlikely(w->exposed && w->processes)) {
-                value = ebpf_process_sum_values_for_pids(w->root_pid, offsetof(ebpf_process_stat_t,
-                                                                               task_err));
-                write_chart_dimension(w->name, value);
-            }
+        ebpf_write_begin_chart(NETDATA_APP_FAMILY, w->clean_name, "_ebpf_process_start");
+        write_chart_dimension("calls", values[0]);
+        ebpf_write_end_chart();
+
+        ebpf_write_begin_chart(NETDATA_APP_FAMILY, w->clean_name, "_ebpf_thread_start");
+        write_chart_dimension("calls", values[1]);
+        ebpf_write_end_chart();
+
+        ebpf_write_begin_chart(NETDATA_APP_FAMILY, w->clean_name, "_ebpf_task_exit");
+        write_chart_dimension("calls", values[2]);
+        ebpf_write_end_chart();
+
+        ebpf_write_begin_chart(NETDATA_APP_FAMILY, w->clean_name, "_ebpf_task_released");
+        write_chart_dimension("calls", values[3]);
+        ebpf_write_end_chart();
+
+        if (em->mode < MODE_ENTRY) {
+            ebpf_write_begin_chart(NETDATA_APP_FAMILY, w->clean_name, "_ebpf_task_error");
+            write_chart_dimension("calls", values[4]);
+            ebpf_write_end_chart();
         }
-        write_end_chart();
     }
 
     ebpf_process_remove_pids();
@@ -272,26 +254,22 @@ void ebpf_process_send_apps_data(struct ebpf_target *root, ebpf_module_t *em)
  *
  * @param maps_per_core do I need to read all cores?
  */
-static void ebpf_read_process_hash_global_tables(int maps_per_core)
+static void ebpf_read_process_hash_global_tables(netdata_idx_t *stats, int maps_per_core)
 {
-    uint64_t idx;
     netdata_idx_t res[NETDATA_KEY_END_VECTOR];
+    ebpf_read_global_table_stats(res,
+                                 process_hash_values,
+                                 process_maps[NETDATA_PROCESS_GLOBAL_TABLE].map_fd,
+                                 maps_per_core,
+                                 0,
+                                 NETDATA_KEY_END_VECTOR);
 
-    netdata_idx_t *val = process_hash_values;
-    int fd = process_maps[NETDATA_PROCESS_GLOBAL_TABLE].map_fd;
-    for (idx = 0; idx < NETDATA_KEY_END_VECTOR; idx++) {
-        if (!bpf_map_lookup_elem(fd, &idx, val)) {
-            uint64_t total = 0;
-            int i;
-            int end = (maps_per_core) ? ebpf_nprocs : 1;
-            for (i = 0; i < end; i++)
-                total += val[i];
-
-            res[idx] = total;
-        } else {
-            res[idx] = 0;
-        }
-    }
+    ebpf_read_global_table_stats(stats,
+                                 process_hash_values,
+                                 process_maps[NETDATA_PROCESS_CTRL_TABLE].map_fd,
+                                 maps_per_core,
+                                 NETDATA_CONTROLLER_PID_TABLE_ADD,
+                                 NETDATA_CONTROLLER_END);
 
     process_aggregated_data[NETDATA_KEY_PUBLISH_PROCESS_EXIT].call = res[NETDATA_KEY_CALLS_DO_EXIT];
     process_aggregated_data[NETDATA_KEY_PUBLISH_PROCESS_RELEASE_TASK].call = res[NETDATA_KEY_CALLS_RELEASE_TASK];
@@ -427,182 +405,8 @@ static void ebpf_create_global_charts(ebpf_module_t *em)
                           &process_publish_aggregated[NETDATA_KEY_PUBLISH_PROCESS_FORK],
                           2, em->update_every, NETDATA_EBPF_MODULE_NAME_PROCESS);
     }
-}
 
-/**
- * Create chart for Statistic Thread
- *
- * Write to standard output current values for threads.
- *
- * @param em a pointer to the structure with the default values.
- */
-static inline void ebpf_create_statistic_thread_chart(ebpf_module_t *em)
-{
-    ebpf_write_chart_cmd(NETDATA_MONITORING_FAMILY,
-                         NETDATA_EBPF_THREADS,
-                         "Threads info.",
-                         "threads",
-                         NETDATA_EBPF_FAMILY,
-                         NETDATA_EBPF_CHART_TYPE_LINE,
-                         NULL,
-                         140000,
-                         em->update_every,
-                         NETDATA_EBPF_MODULE_NAME_PROCESS);
-
-    ebpf_write_global_dimension(threads_stat[NETDATA_EBPF_THREAD_STAT_TOTAL],
-                                threads_stat[NETDATA_EBPF_THREAD_STAT_TOTAL],
-                                ebpf_algorithms[NETDATA_EBPF_ABSOLUTE_IDX]);
-
-    ebpf_write_global_dimension(threads_stat[NETDATA_EBPF_THREAD_STAT_RUNNING],
-                                threads_stat[NETDATA_EBPF_THREAD_STAT_RUNNING],
-                                ebpf_algorithms[NETDATA_EBPF_ABSOLUTE_IDX]);
-}
-
-/**
- * Create chart for Load Thread
- *
- * Write to standard output current values for load mode.
- *
- * @param em a pointer to the structure with the default values.
- */
-static inline void ebpf_create_statistic_load_chart(ebpf_module_t *em)
-{
-    ebpf_write_chart_cmd(NETDATA_MONITORING_FAMILY,
-                         NETDATA_EBPF_LOAD_METHOD,
-                         "Load info.",
-                         "methods",
-                         NETDATA_EBPF_FAMILY,
-                         NETDATA_EBPF_CHART_TYPE_LINE,
-                         NULL,
-                         140001,
-                         em->update_every,
-                         NETDATA_EBPF_MODULE_NAME_PROCESS);
-
-    ebpf_write_global_dimension(load_event_stat[NETDATA_EBPF_LOAD_STAT_LEGACY],
-                                load_event_stat[NETDATA_EBPF_LOAD_STAT_LEGACY],
-                                ebpf_algorithms[NETDATA_EBPF_ABSOLUTE_IDX]);
-
-    ebpf_write_global_dimension(load_event_stat[NETDATA_EBPF_LOAD_STAT_CORE],
-                                load_event_stat[NETDATA_EBPF_LOAD_STAT_CORE],
-                                ebpf_algorithms[NETDATA_EBPF_ABSOLUTE_IDX]);
-}
-
-/**
- * Create chart for Kernel Memory
- *
- * Write to standard output current values for allocated memory.
- *
- * @param em a pointer to the structure with the default values.
- */
-static inline void ebpf_create_statistic_kernel_memory(ebpf_module_t *em)
-{
-    ebpf_write_chart_cmd(NETDATA_MONITORING_FAMILY,
-                         NETDATA_EBPF_KERNEL_MEMORY,
-                         "Memory allocated for hash tables.",
-                         "bytes",
-                         NETDATA_EBPF_FAMILY,
-                         NETDATA_EBPF_CHART_TYPE_LINE,
-                         NULL,
-                         140002,
-                         em->update_every,
-                         NETDATA_EBPF_MODULE_NAME_PROCESS);
-
-    ebpf_write_global_dimension(memlock_stat,
-                                memlock_stat,
-                                ebpf_algorithms[NETDATA_EBPF_ABSOLUTE_IDX]);
-}
-
-/**
- * Create chart Hash Table
- *
- * Write to standard output number of hash tables used with this software.
- *
- * @param em a pointer to the structure with the default values.
- */
-static inline void ebpf_create_statistic_hash_tables(ebpf_module_t *em)
-{
-    ebpf_write_chart_cmd(NETDATA_MONITORING_FAMILY,
-                         NETDATA_EBPF_HASH_TABLES_LOADED,
-                         "Number of hash tables loaded.",
-                         "hash tables",
-                         NETDATA_EBPF_FAMILY,
-                         NETDATA_EBPF_CHART_TYPE_LINE,
-                         NULL,
-                         140003,
-                         em->update_every,
-                         NETDATA_EBPF_MODULE_NAME_PROCESS);
-
-    ebpf_write_global_dimension(hash_table_stat,
-                                hash_table_stat,
-                                ebpf_algorithms[NETDATA_EBPF_ABSOLUTE_IDX]);
-}
-
-/**
- * Create chart for percpu stats
- *
- * Write to standard output current values for threads.
- *
- * @param em a pointer to the structure with the default values.
- */
-static inline void ebpf_create_statistic_hash_per_core(ebpf_module_t *em)
-{
-    ebpf_write_chart_cmd(NETDATA_MONITORING_FAMILY,
-                         NETDATA_EBPF_HASH_TABLES_PER_CORE,
-                         "How threads are loading hash/array tables.",
-                         "threads",
-                         NETDATA_EBPF_FAMILY,
-                         NETDATA_EBPF_CHART_TYPE_LINE,
-                         NULL,
-                         140004,
-                         em->update_every,
-                         NETDATA_EBPF_MODULE_NAME_PROCESS);
-
-    ebpf_write_global_dimension(hash_table_core[NETDATA_EBPF_THREAD_PER_CORE],
-                                hash_table_core[NETDATA_EBPF_THREAD_PER_CORE],
-                                ebpf_algorithms[NETDATA_EBPF_ABSOLUTE_IDX]);
-
-    ebpf_write_global_dimension(hash_table_core[NETDATA_EBPF_THREAD_UNIQUE],
-                                hash_table_core[NETDATA_EBPF_THREAD_UNIQUE],
-                                ebpf_algorithms[NETDATA_EBPF_ABSOLUTE_IDX]);
-}
-
-/**
- * Update Internal Metric variable
- *
- * By default eBPF.plugin sends internal metrics for netdata, but user can
- * disable this.
- *
- * The function updates the variable used to send charts.
- */
-static void update_internal_metric_variable()
-{
-    const char *s = getenv("NETDATA_INTERNALS_MONITORING");
-    if (s && *s && strcmp(s, "NO") == 0)
-        publish_internal_metrics = false;
-}
-
-/**
- * Create Statistics Charts
- *
- * Create charts that will show statistics related to eBPF plugin.
- *
- * @param em a pointer to the structure with the default values.
- */
-static void ebpf_create_statistic_charts(ebpf_module_t *em)
-{
-    update_internal_metric_variable();
-    if (!publish_internal_metrics)
-        return;
-
-    ebpf_create_statistic_thread_chart(em);
-
-    ebpf_create_statistic_load_chart(em);
-
-    ebpf_create_statistic_kernel_memory(em);
-
-    ebpf_create_statistic_hash_tables(em);
-
-    ebpf_create_statistic_hash_per_core(em);
+    fflush(stdout);
 }
 
 /**
@@ -616,52 +420,89 @@ static void ebpf_create_statistic_charts(ebpf_module_t *em)
 void ebpf_process_create_apps_charts(struct ebpf_module *em, void *ptr)
 {
     struct ebpf_target *root = ptr;
-    ebpf_create_charts_on_apps(NETDATA_SYSCALL_APPS_TASK_PROCESS,
-                               "Process started",
-                               EBPF_COMMON_DIMENSION_CALL,
-                               NETDATA_PROCESS_GROUP,
-                               NETDATA_EBPF_CHART_TYPE_STACKED,
-                               20065,
-                               ebpf_algorithms[NETDATA_EBPF_ABSOLUTE_IDX],
-                               root, em->update_every, NETDATA_EBPF_MODULE_NAME_PROCESS);
+    struct ebpf_target *w;
+    int update_every = em->update_every;
+    for (w = root; w; w = w->next) {
+        if (unlikely(!w->exposed))
+            continue;
 
-    ebpf_create_charts_on_apps(NETDATA_SYSCALL_APPS_TASK_THREAD,
-                               "Threads started",
-                               EBPF_COMMON_DIMENSION_CALL,
-                               NETDATA_PROCESS_GROUP,
-                               NETDATA_EBPF_CHART_TYPE_STACKED,
-                               20066,
-                               ebpf_algorithms[NETDATA_EBPF_ABSOLUTE_IDX],
-                               root, em->update_every, NETDATA_EBPF_MODULE_NAME_PROCESS);
+        ebpf_write_chart_cmd(NETDATA_APP_FAMILY,
+                             w->clean_name,
+                             "_ebpf_process_start",
+                             "Process started.",
+                             EBPF_COMMON_DIMENSION_CALL,
+                             NETDATA_PROCESS_GROUP,
+                             NETDATA_EBPF_CHART_TYPE_STACKED,
+                             "app.ebpf_process_start",
+                             20161,
+                             update_every,
+                             NETDATA_EBPF_MODULE_NAME_PROCESS);
+        ebpf_create_chart_labels("app_group", w->name, 1);
+        ebpf_commit_label();
+        fprintf(stdout, "DIMENSION calls '' %s 1 1\n", ebpf_algorithms[NETDATA_EBPF_ABSOLUTE_IDX]);
 
-    ebpf_create_charts_on_apps(NETDATA_SYSCALL_APPS_TASK_EXIT,
-                               "Tasks starts exit process.",
-                               EBPF_COMMON_DIMENSION_CALL,
-                               NETDATA_PROCESS_GROUP,
-                               NETDATA_EBPF_CHART_TYPE_STACKED,
-                               20067,
-                               ebpf_algorithms[NETDATA_EBPF_ABSOLUTE_IDX],
-                               root, em->update_every, NETDATA_EBPF_MODULE_NAME_PROCESS);
+        ebpf_write_chart_cmd(NETDATA_APP_FAMILY,
+                             w->clean_name,
+                             "_ebpf_thread_start",
+                             "Threads started.",
+                             EBPF_COMMON_DIMENSION_CALL,
+                             NETDATA_PROCESS_GROUP,
+                             NETDATA_EBPF_CHART_TYPE_STACKED,
+                             "app.ebpf_thread_start",
+                             20162,
+                             update_every,
+                             NETDATA_EBPF_MODULE_NAME_PROCESS);
+        ebpf_create_chart_labels("app_group", w->name, 1);
+        ebpf_commit_label();
+        fprintf(stdout, "DIMENSION calls '' %s 1 1\n", ebpf_algorithms[NETDATA_EBPF_ABSOLUTE_IDX]);
 
-    ebpf_create_charts_on_apps(NETDATA_SYSCALL_APPS_TASK_CLOSE,
-                               "Tasks closed",
-                               EBPF_COMMON_DIMENSION_CALL,
-                               NETDATA_PROCESS_GROUP,
-                               NETDATA_EBPF_CHART_TYPE_STACKED,
-                               20068,
-                               ebpf_algorithms[NETDATA_EBPF_ABSOLUTE_IDX],
-                               root, em->update_every, NETDATA_EBPF_MODULE_NAME_PROCESS);
+        ebpf_write_chart_cmd(NETDATA_APP_FAMILY,
+                             w->clean_name,
+                             "_ebpf_task_exit",
+                             "Tasks starts exit process.",
+                             EBPF_COMMON_DIMENSION_CALL,
+                             NETDATA_PROCESS_GROUP,
+                             NETDATA_EBPF_CHART_TYPE_STACKED,
+                             "app.ebpf_task_exit",
+                             20163,
+                             update_every,
+                             NETDATA_EBPF_MODULE_NAME_PROCESS);
+        ebpf_create_chart_labels("app_group", w->name, 1);
+        ebpf_commit_label();
+        fprintf(stdout, "DIMENSION calls '' %s 1 1\n", ebpf_algorithms[NETDATA_EBPF_ABSOLUTE_IDX]);
 
-    if (em->mode < MODE_ENTRY) {
-        ebpf_create_charts_on_apps(NETDATA_SYSCALL_APPS_TASK_ERROR,
-                                   "Errors to create process or threads.",
-                                   EBPF_COMMON_DIMENSION_CALL,
-                                   NETDATA_PROCESS_GROUP,
-                                   NETDATA_EBPF_CHART_TYPE_STACKED,
-                                   20069,
-                                   ebpf_algorithms[NETDATA_EBPF_ABSOLUTE_IDX],
-                                   root,
-                                   em->update_every, NETDATA_EBPF_MODULE_NAME_PROCESS);
+        ebpf_write_chart_cmd(NETDATA_APP_FAMILY,
+                             w->clean_name,
+                             "_ebpf_task_released",
+                             "Tasks released.",
+                             EBPF_COMMON_DIMENSION_CALL,
+                             NETDATA_PROCESS_GROUP,
+                             NETDATA_EBPF_CHART_TYPE_STACKED,
+                             "app.ebpf_task_released",
+                             20164,
+                             update_every,
+                             NETDATA_EBPF_MODULE_NAME_PROCESS);
+        ebpf_create_chart_labels("app_group", w->name, 1);
+        ebpf_commit_label();
+        fprintf(stdout, "DIMENSION calls '' %s 1 1\n", ebpf_algorithms[NETDATA_EBPF_ABSOLUTE_IDX]);
+
+        if (em->mode < MODE_ENTRY) {
+            ebpf_write_chart_cmd(NETDATA_APP_FAMILY,
+                                 w->clean_name,
+                                 "_ebpf_task_error",
+                                 "Errors to create process or threads.",
+                                 EBPF_COMMON_DIMENSION_CALL,
+                                 NETDATA_PROCESS_GROUP,
+                                 NETDATA_EBPF_CHART_TYPE_STACKED,
+                                 "app.ebpf_task_error",
+                                 20165,
+                                 update_every,
+                                 NETDATA_EBPF_MODULE_NAME_PROCESS);
+            ebpf_create_chart_labels("app_group", w->name, 1);
+            ebpf_commit_label();
+            fprintf(stdout, "DIMENSION calls '' %s 1 1\n", ebpf_algorithms[NETDATA_EBPF_ABSOLUTE_IDX]);
+        }
+        w->charts_created |= 1<<EBPF_MODULE_PROCESS_IDX;
     }
 
     em->apps_charts |= NETDATA_EBPF_APPS_FLAG_CHART_CREATED;
@@ -673,6 +514,229 @@ void ebpf_process_create_apps_charts(struct ebpf_module *em, void *ptr)
  *
  *****************************************************************/
 
+static void ebpf_obsolete_specific_process_charts(char *type, ebpf_module_t *em);
+
+/**
+ * Obsolete services
+ *
+ * Obsolete all service charts created
+ *
+ * @param em a pointer to `struct ebpf_module`
+ */
+static void ebpf_obsolete_process_services(ebpf_module_t *em)
+{
+    ebpf_write_chart_obsolete(NETDATA_SERVICE_FAMILY,
+                              NETDATA_SYSCALL_APPS_TASK_PROCESS,
+                              "",
+                              "Process started",
+                              EBPF_COMMON_DIMENSION_CALL,
+                              NETDATA_APPS_PROCESS_GROUP,
+                              NETDATA_EBPF_CHART_TYPE_STACKED,
+                              NULL,
+                              20065,
+                              em->update_every);
+
+    ebpf_write_chart_obsolete(NETDATA_SERVICE_FAMILY,
+                              NETDATA_SYSCALL_APPS_TASK_THREAD,
+                              "",
+                              "Threads started",
+                              EBPF_COMMON_DIMENSION_CALL,
+                              NETDATA_APPS_PROCESS_GROUP,
+                              NETDATA_EBPF_CHART_TYPE_STACKED,
+                              NULL,
+                              20066,
+                              em->update_every);
+
+    ebpf_write_chart_obsolete(NETDATA_SERVICE_FAMILY,
+                              NETDATA_SYSCALL_APPS_TASK_CLOSE,
+                              "",
+                              "Tasks starts exit process.",
+                              EBPF_COMMON_DIMENSION_CALL,
+                              NETDATA_APPS_PROCESS_GROUP,
+                              NETDATA_EBPF_CHART_TYPE_STACKED,
+                              NULL,
+                              20067,
+                              em->update_every);
+
+    ebpf_write_chart_obsolete(NETDATA_SERVICE_FAMILY,
+                              NETDATA_SYSCALL_APPS_TASK_EXIT,
+                              "",
+                              "Tasks closed",
+                              EBPF_COMMON_DIMENSION_CALL,
+                              NETDATA_APPS_PROCESS_GROUP,
+                              NETDATA_EBPF_CHART_TYPE_STACKED,
+                              NULL,
+                              20068,
+                              em->update_every);
+
+    if (em->mode < MODE_ENTRY) {
+        ebpf_write_chart_obsolete(NETDATA_SERVICE_FAMILY,
+                                  NETDATA_SYSCALL_APPS_TASK_ERROR,
+                                  "",
+                                  "Errors to create process or threads.",
+                                  EBPF_COMMON_DIMENSION_CALL,
+                                  NETDATA_APPS_PROCESS_GROUP,
+                                  NETDATA_EBPF_CHART_TYPE_STACKED,
+                                  NULL,
+                                  20069,
+                                  em->update_every);
+    }
+}
+
+/**
+ * Obsolete cgroup chart
+ *
+ * Send obsolete for all charts created before to close.
+ *
+ * @param em a pointer to `struct ebpf_module`
+ */
+static inline void ebpf_obsolete_process_cgroup_charts(ebpf_module_t *em) {
+    pthread_mutex_lock(&mutex_cgroup_shm);
+
+    ebpf_obsolete_process_services(em);
+
+    ebpf_cgroup_target_t *ect;
+    for (ect = ebpf_cgroup_pids; ect ; ect = ect->next) {
+        if (ect->systemd)
+            continue;
+
+        ebpf_obsolete_specific_process_charts(ect->name, em);
+    }
+    pthread_mutex_unlock(&mutex_cgroup_shm);
+}
+
+/**
+ * Obsolette apps charts
+ *
+ * Obsolete apps charts.
+ *
+ * @param em a pointer to the structure with the default values.
+ */
+void ebpf_obsolete_process_apps_charts(struct ebpf_module *em)
+{
+    struct ebpf_target *w;
+    int update_every = em->update_every;
+    for (w = apps_groups_root_target; w; w = w->next) {
+        if (unlikely(!(w->charts_created & (1<<EBPF_MODULE_PROCESS_IDX))))
+            continue;
+
+        ebpf_write_chart_obsolete(NETDATA_APP_FAMILY,
+                                  w->clean_name,
+                                  "_ebpf_process_start",
+                                  "Process started.",
+                                  EBPF_COMMON_DIMENSION_CALL,
+                                  NETDATA_PROCESS_GROUP,
+                                  NETDATA_EBPF_CHART_TYPE_STACKED,
+                                  "app.ebpf_process_start",
+                                  20161,
+                                  update_every);
+
+        ebpf_write_chart_obsolete(NETDATA_APP_FAMILY,
+                                  w->clean_name,
+                                  "_ebpf_thread_start",
+                                  "Threads started.",
+                                  EBPF_COMMON_DIMENSION_CALL,
+                                  NETDATA_PROCESS_GROUP,
+                                  NETDATA_EBPF_CHART_TYPE_STACKED,
+                                  "app.ebpf_thread_start",
+                                  20162,
+                                  update_every);
+
+        ebpf_write_chart_obsolete(NETDATA_APP_FAMILY,
+                                  w->clean_name,
+                                  "_ebpf_task_exit",
+                                  "Tasks starts exit process.",
+                                  EBPF_COMMON_DIMENSION_CALL,
+                                  NETDATA_PROCESS_GROUP,
+                                  NETDATA_EBPF_CHART_TYPE_STACKED,
+                                  "app.ebpf_task_exit",
+                                  20163,
+                                  update_every);
+
+        ebpf_write_chart_obsolete(NETDATA_APP_FAMILY,
+                                  w->clean_name,
+                                  "_ebpf_task_released",
+                                  "Tasks released.",
+                                  EBPF_COMMON_DIMENSION_CALL,
+                                  NETDATA_PROCESS_GROUP,
+                                  NETDATA_EBPF_CHART_TYPE_STACKED,
+                                  "app.ebpf_task_released",
+                                  20164,
+                                  update_every);
+
+        if (em->mode < MODE_ENTRY) {
+            ebpf_write_chart_obsolete(NETDATA_APP_FAMILY,
+                                      w->clean_name,
+                                      "_ebpf_task_error",
+                                      "Errors to create process or threads.",
+                                      EBPF_COMMON_DIMENSION_CALL,
+                                      NETDATA_PROCESS_GROUP,
+                                      NETDATA_EBPF_CHART_TYPE_STACKED,
+                                      "app.ebpf_task_error",
+                                      20165,
+                                      update_every);
+        }
+
+        w->charts_created &= ~(1<<EBPF_MODULE_PROCESS_IDX);
+    }
+}
+
+/**
+ * Obsolete global
+ *
+ * Obsolete global charts created by thread.
+ *
+ * @param em a pointer to `struct ebpf_module`
+ */
+static void ebpf_obsolete_process_global(ebpf_module_t *em)
+{
+    ebpf_write_chart_obsolete(NETDATA_EBPF_SYSTEM_GROUP,
+                              NETDATA_PROCESS_SYSCALL,
+                              "",
+                              "Start process",
+                              EBPF_COMMON_DIMENSION_CALL,
+                              NETDATA_PROCESS_GROUP,
+                              NETDATA_EBPF_CHART_TYPE_LINE,
+                              NULL,
+                              21002,
+                              em->update_every);
+
+    ebpf_write_chart_obsolete(NETDATA_EBPF_SYSTEM_GROUP,
+                              NETDATA_EXIT_SYSCALL,
+                              "",
+                              "Exit process",
+                              EBPF_COMMON_DIMENSION_CALL,
+                              NETDATA_PROCESS_GROUP,
+                              NETDATA_EBPF_CHART_TYPE_LINE,
+                              NULL,
+                              21003,
+                              em->update_every);
+
+    ebpf_write_chart_obsolete(NETDATA_EBPF_SYSTEM_GROUP,
+                              NETDATA_PROCESS_STATUS_NAME,
+                              "",
+                              "Process not closed",
+                              EBPF_COMMON_DIMENSION_DIFFERENCE,
+                              NETDATA_PROCESS_GROUP,
+                              NETDATA_EBPF_CHART_TYPE_LINE,
+                              NULL,
+                              21004,
+                              em->update_every);
+
+    if (em->mode < MODE_ENTRY) {
+        ebpf_write_chart_obsolete(NETDATA_EBPF_SYSTEM_GROUP,
+                                  NETDATA_PROCESS_ERROR_NAME,
+                                  "",
+                                  "Fails to create process",
+                                  EBPF_COMMON_DIMENSION_CALL,
+                                  NETDATA_PROCESS_GROUP,
+                                  NETDATA_EBPF_CHART_TYPE_LINE,
+                                  NULL,
+                                  21005,
+                                  em->update_every);
+    }
+}
+
 /**
  * Process disable tracepoints
  *
@@ -683,17 +747,17 @@ static void ebpf_process_disable_tracepoints()
     char *default_message = { "Cannot disable the tracepoint" };
     if (!was_sched_process_exit_enabled) {
         if (ebpf_disable_tracing_values(tracepoint_sched_type, tracepoint_sched_process_exit))
-            error("%s %s/%s.", default_message, tracepoint_sched_type, tracepoint_sched_process_exit);
+            netdata_log_error("%s %s/%s.", default_message, tracepoint_sched_type, tracepoint_sched_process_exit);
     }
 
     if (!was_sched_process_exec_enabled) {
         if (ebpf_disable_tracing_values(tracepoint_sched_type, tracepoint_sched_process_exec))
-            error("%s %s/%s.", default_message, tracepoint_sched_type, tracepoint_sched_process_exec);
+            netdata_log_error("%s %s/%s.", default_message, tracepoint_sched_type, tracepoint_sched_process_exec);
     }
 
     if (!was_sched_process_fork_enabled) {
         if (ebpf_disable_tracing_values(tracepoint_sched_type, tracepoint_sched_process_fork))
-            error("%s %s/%s.", default_message, tracepoint_sched_type, tracepoint_sched_process_fork);
+            netdata_log_error("%s %s/%s.", default_message, tracepoint_sched_type, tracepoint_sched_process_fork);
     }
 }
 
@@ -708,6 +772,36 @@ static void ebpf_process_exit(void *ptr)
 {
     ebpf_module_t *em = (ebpf_module_t *)ptr;
 
+    if (em->enabled == NETDATA_THREAD_EBPF_FUNCTION_RUNNING) {
+        pthread_mutex_lock(&lock);
+        if (em->cgroup_charts) {
+            ebpf_obsolete_process_cgroup_charts(em);
+            fflush(stdout);
+        }
+
+        if (em->apps_charts & NETDATA_EBPF_APPS_FLAG_CHART_CREATED) {
+            ebpf_obsolete_process_apps_charts(em);
+        }
+
+        ebpf_obsolete_process_global(em);
+
+#ifdef NETDATA_DEV_MODE
+    if (ebpf_aral_process_stat)
+        ebpf_statistic_obsolete_aral_chart(em, process_disable_priority);
+#endif
+
+        fflush(stdout);
+        pthread_mutex_unlock(&lock);
+    }
+
+    ebpf_update_kernel_memory_with_vector(&plugin_statistics, em->maps, EBPF_ACTION_STAT_REMOVE);
+
+    if (em->objects) {
+        ebpf_unload_legacy_code(em->objects, em->probe_links);
+        em->objects = NULL;
+        em->probe_links = NULL;
+    }
+
     freez(process_hash_values);
     freez(process_stat_vector);
 
@@ -716,6 +810,7 @@ static void ebpf_process_exit(void *ptr)
     pthread_mutex_lock(&ebpf_exit_cleanup);
     process_pid_fd = -1;
     em->enabled = NETDATA_THREAD_EBPF_STOPPED;
+    ebpf_update_stats(&plugin_statistics, em);
     pthread_mutex_unlock(&ebpf_exit_cleanup);
 }
 
@@ -740,14 +835,14 @@ static void ebpf_process_sum_cgroup_pids(ebpf_process_stat_t *ps, struct pid_on_
     memset(&accumulator, 0, sizeof(accumulator));
 
     while (pids) {
-        ebpf_process_stat_t *ps = &pids->ps;
+        ebpf_process_stat_t *pps = &pids->ps;
 
-        accumulator.exit_call += ps->exit_call;
-        accumulator.release_call += ps->release_call;
-        accumulator.create_process += ps->create_process;
-        accumulator.create_thread += ps->create_thread;
+        accumulator.exit_call += pps->exit_call;
+        accumulator.release_call += pps->release_call;
+        accumulator.create_process += pps->create_process;
+        accumulator.create_thread += pps->create_thread;
 
-        accumulator.task_err += ps->task_err;
+        accumulator.task_err += pps->task_err;
 
         pids = pids->next;
     }
@@ -771,31 +866,31 @@ static void ebpf_process_sum_cgroup_pids(ebpf_process_stat_t *ps, struct pid_on_
  */
 static void ebpf_send_specific_process_data(char *type, ebpf_process_stat_t *values, ebpf_module_t *em)
 {
-    write_begin_chart(type, NETDATA_SYSCALL_APPS_TASK_PROCESS);
+    ebpf_write_begin_chart(type, NETDATA_SYSCALL_APPS_TASK_PROCESS, "");
     write_chart_dimension(process_publish_aggregated[NETDATA_KEY_PUBLISH_PROCESS_FORK].name,
                           (long long) values->create_process);
-    write_end_chart();
+    ebpf_write_end_chart();
 
-    write_begin_chart(type, NETDATA_SYSCALL_APPS_TASK_THREAD);
+    ebpf_write_begin_chart(type, NETDATA_SYSCALL_APPS_TASK_THREAD, "");
     write_chart_dimension(process_publish_aggregated[NETDATA_KEY_PUBLISH_PROCESS_CLONE].name,
                           (long long) values->create_thread);
-    write_end_chart();
+    ebpf_write_end_chart();
 
-    write_begin_chart(type, NETDATA_SYSCALL_APPS_TASK_EXIT);
+    ebpf_write_begin_chart(type, NETDATA_SYSCALL_APPS_TASK_EXIT, "");
     write_chart_dimension(process_publish_aggregated[NETDATA_KEY_PUBLISH_PROCESS_EXIT].name,
                           (long long) values->release_call);
-    write_end_chart();
+    ebpf_write_end_chart();
 
-    write_begin_chart(type, NETDATA_SYSCALL_APPS_TASK_CLOSE);
+    ebpf_write_begin_chart(type, NETDATA_SYSCALL_APPS_TASK_CLOSE, "");
     write_chart_dimension(process_publish_aggregated[NETDATA_KEY_PUBLISH_PROCESS_RELEASE_TASK].name,
                           (long long) values->release_call);
-    write_end_chart();
+    ebpf_write_end_chart();
 
     if (em->mode < MODE_ENTRY) {
-        write_begin_chart(type, NETDATA_SYSCALL_APPS_TASK_ERROR);
+        ebpf_write_begin_chart(type, NETDATA_SYSCALL_APPS_TASK_ERROR, "");
         write_chart_dimension(process_publish_aggregated[NETDATA_KEY_PUBLISH_PROCESS_EXIT].name,
                               (long long) values->task_err);
-        write_end_chart();
+        ebpf_write_end_chart();
     }
 }
 
@@ -861,28 +956,28 @@ static void ebpf_create_specific_process_charts(char *type, ebpf_module_t *em)
  */
 static void ebpf_obsolete_specific_process_charts(char *type, ebpf_module_t *em)
 {
-    ebpf_write_chart_obsolete(type, NETDATA_SYSCALL_APPS_TASK_PROCESS, "Process started",
+    ebpf_write_chart_obsolete(type, NETDATA_SYSCALL_APPS_TASK_PROCESS, "", "Process started",
                               EBPF_COMMON_DIMENSION_CALL, NETDATA_PROCESS_GROUP, NETDATA_EBPF_CHART_TYPE_LINE,
                               NETDATA_CGROUP_PROCESS_CREATE_CONTEXT, NETDATA_CHART_PRIO_CGROUPS_CONTAINERS + 5000,
                               em->update_every);
 
-    ebpf_write_chart_obsolete(type, NETDATA_SYSCALL_APPS_TASK_THREAD, "Threads started",
+    ebpf_write_chart_obsolete(type, NETDATA_SYSCALL_APPS_TASK_THREAD, "", "Threads started",
                               EBPF_COMMON_DIMENSION_CALL, NETDATA_PROCESS_GROUP, NETDATA_EBPF_CHART_TYPE_LINE,
                               NETDATA_CGROUP_THREAD_CREATE_CONTEXT, NETDATA_CHART_PRIO_CGROUPS_CONTAINERS + 5001,
                               em->update_every);
 
-    ebpf_write_chart_obsolete(type, NETDATA_SYSCALL_APPS_TASK_EXIT,"Tasks starts exit process.",
+    ebpf_write_chart_obsolete(type, NETDATA_SYSCALL_APPS_TASK_EXIT, "","Tasks starts exit process.",
                               EBPF_COMMON_DIMENSION_CALL, NETDATA_PROCESS_GROUP, NETDATA_EBPF_CHART_TYPE_LINE,
                               NETDATA_CGROUP_PROCESS_EXIT_CONTEXT, NETDATA_CHART_PRIO_CGROUPS_CONTAINERS + 5002,
                               em->update_every);
 
-    ebpf_write_chart_obsolete(type, NETDATA_SYSCALL_APPS_TASK_CLOSE,"Tasks closed",
+    ebpf_write_chart_obsolete(type, NETDATA_SYSCALL_APPS_TASK_CLOSE, "","Tasks closed",
                               EBPF_COMMON_DIMENSION_CALL, NETDATA_PROCESS_GROUP, NETDATA_EBPF_CHART_TYPE_LINE,
                               NETDATA_CGROUP_PROCESS_CLOSE_CONTEXT, NETDATA_CHART_PRIO_CGROUPS_CONTAINERS + 5003,
                               em->update_every);
 
     if (em->mode < MODE_ENTRY) {
-        ebpf_write_chart_obsolete(type, NETDATA_SYSCALL_APPS_TASK_ERROR,"Errors to create process or threads.",
+        ebpf_write_chart_obsolete(type, NETDATA_SYSCALL_APPS_TASK_ERROR, "","Errors to create process or threads.",
                                   EBPF_COMMON_DIMENSION_CALL, NETDATA_PROCESS_GROUP, NETDATA_EBPF_CHART_TYPE_LINE,
                                   NETDATA_CGROUP_PROCESS_ERROR_CONTEXT, NETDATA_CHART_PRIO_CGROUPS_CONTAINERS + 5004,
                                   em->update_every);
@@ -941,46 +1036,46 @@ static void ebpf_create_systemd_process_charts(ebpf_module_t *em)
 static void ebpf_send_systemd_process_charts(ebpf_module_t *em)
 {
     ebpf_cgroup_target_t *ect;
-    write_begin_chart(NETDATA_SERVICE_FAMILY, NETDATA_SYSCALL_APPS_TASK_PROCESS);
+    ebpf_write_begin_chart(NETDATA_SERVICE_FAMILY, NETDATA_SYSCALL_APPS_TASK_PROCESS, "");
     for (ect = ebpf_cgroup_pids; ect ; ect = ect->next) {
         if (unlikely(ect->systemd) && unlikely(ect->updated)) {
             write_chart_dimension(ect->name, ect->publish_systemd_ps.create_process);
         }
     }
-    write_end_chart();
+    ebpf_write_end_chart();
 
-    write_begin_chart(NETDATA_SERVICE_FAMILY, NETDATA_SYSCALL_APPS_TASK_THREAD);
+    ebpf_write_begin_chart(NETDATA_SERVICE_FAMILY, NETDATA_SYSCALL_APPS_TASK_THREAD, "");
     for (ect = ebpf_cgroup_pids; ect ; ect = ect->next) {
         if (unlikely(ect->systemd) && unlikely(ect->updated)) {
             write_chart_dimension(ect->name, ect->publish_systemd_ps.create_thread);
         }
     }
-    write_end_chart();
+    ebpf_write_end_chart();
 
-    write_begin_chart(NETDATA_SERVICE_FAMILY, NETDATA_SYSCALL_APPS_TASK_EXIT);
+    ebpf_write_begin_chart(NETDATA_SERVICE_FAMILY, NETDATA_SYSCALL_APPS_TASK_EXIT, "");
     for (ect = ebpf_cgroup_pids; ect ; ect = ect->next) {
         if (unlikely(ect->systemd) && unlikely(ect->updated)) {
             write_chart_dimension(ect->name, ect->publish_systemd_ps.exit_call);
         }
     }
-    write_end_chart();
+    ebpf_write_end_chart();
 
-    write_begin_chart(NETDATA_SERVICE_FAMILY, NETDATA_SYSCALL_APPS_TASK_CLOSE);
+    ebpf_write_begin_chart(NETDATA_SERVICE_FAMILY, NETDATA_SYSCALL_APPS_TASK_CLOSE, "");
     for (ect = ebpf_cgroup_pids; ect ; ect = ect->next) {
         if (unlikely(ect->systemd) && unlikely(ect->updated)) {
             write_chart_dimension(ect->name, ect->publish_systemd_ps.release_call);
         }
     }
-    write_end_chart();
+    ebpf_write_end_chart();
 
     if (em->mode < MODE_ENTRY) {
-        write_begin_chart(NETDATA_SERVICE_FAMILY, NETDATA_SYSCALL_APPS_TASK_ERROR);
+        ebpf_write_begin_chart(NETDATA_SERVICE_FAMILY, NETDATA_SYSCALL_APPS_TASK_ERROR, "");
         for (ect = ebpf_cgroup_pids; ect ; ect = ect->next) {
             if (unlikely(ect->systemd) && unlikely(ect->updated)) {
                 write_chart_dimension(ect->name, ect->publish_systemd_ps.task_err);
             }
         }
-        write_end_chart();
+        ebpf_write_end_chart();
     }
 }
 
@@ -1047,40 +1142,6 @@ void ebpf_process_update_cgroup_algorithm()
 }
 
 /**
- * Send Statistic Data
- *
- * Send statistic information to netdata.
- */
-void ebpf_send_statistic_data()
-{
-    if (!publish_internal_metrics)
-        return;
-
-    write_begin_chart(NETDATA_MONITORING_FAMILY, NETDATA_EBPF_THREADS);
-    write_chart_dimension(threads_stat[NETDATA_EBPF_THREAD_STAT_TOTAL], (long long)plugin_statistics.threads);
-    write_chart_dimension(threads_stat[NETDATA_EBPF_THREAD_STAT_RUNNING], (long long)plugin_statistics.running);
-    write_end_chart();
-
-    write_begin_chart(NETDATA_MONITORING_FAMILY, NETDATA_EBPF_LOAD_METHOD);
-    write_chart_dimension(load_event_stat[NETDATA_EBPF_LOAD_STAT_LEGACY], (long long)plugin_statistics.legacy);
-    write_chart_dimension(load_event_stat[NETDATA_EBPF_LOAD_STAT_CORE], (long long)plugin_statistics.core);
-    write_end_chart();
-
-    write_begin_chart(NETDATA_MONITORING_FAMILY, NETDATA_EBPF_KERNEL_MEMORY);
-    write_chart_dimension(memlock_stat, (long long)plugin_statistics.memlock_kern);
-    write_end_chart();
-
-    write_begin_chart(NETDATA_MONITORING_FAMILY, NETDATA_EBPF_HASH_TABLES_LOADED);
-    write_chart_dimension(hash_table_stat, (long long)plugin_statistics.hash_tables);
-    write_end_chart();
-
-    write_begin_chart(NETDATA_MONITORING_FAMILY, NETDATA_EBPF_HASH_TABLES_PER_CORE);
-    write_chart_dimension(hash_table_core[NETDATA_EBPF_THREAD_PER_CORE], (long long)plugin_statistics.hash_percpu);
-    write_chart_dimension(hash_table_core[NETDATA_EBPF_THREAD_UNIQUE], (long long)plugin_statistics.hash_unique);
-    write_end_chart();
-}
-
-/**
  * Main loop for this collector.
  *
  * @param em   the structure with thread information
@@ -1092,7 +1153,6 @@ static void process_collector(ebpf_module_t *em)
     int publish_global = em->global_charts;
     int cgroups = em->cgroup_charts;
     pthread_mutex_lock(&ebpf_exit_cleanup);
-    int thread_enabled = em->enabled;
     process_pid_fd = process_maps[NETDATA_PROCESS_PID_TABLE].map_fd;
     pthread_mutex_unlock(&ebpf_exit_cleanup);
     if (cgroups)
@@ -1101,16 +1161,20 @@ static void process_collector(ebpf_module_t *em)
     int update_every = em->update_every;
     int counter = update_every - 1;
     int maps_per_core = em->maps_per_core;
-    while (!ebpf_exit_plugin) {
+    uint32_t running_time = 0;
+    uint32_t lifetime = em->lifetime;
+    netdata_idx_t *stats = em->hash_table_stats;
+    memset(stats, 0, sizeof(em->hash_table_stats));
+    while (!ebpf_plugin_exit && running_time < lifetime) {
         usec_t dt = heartbeat_next(&hb, USEC_PER_SEC);
         (void)dt;
-        if (ebpf_exit_plugin)
+        if (ebpf_plugin_exit)
             break;
 
         if (++counter == update_every) {
             counter = 0;
 
-            ebpf_read_process_hash_global_tables(maps_per_core);
+            ebpf_read_process_hash_global_tables(stats, maps_per_core);
 
             netdata_apps_integration_flags_t apps_enabled = em->apps_charts;
             pthread_mutex_lock(&collect_data_mutex);
@@ -1122,28 +1186,35 @@ static void process_collector(ebpf_module_t *em)
             }
 
             pthread_mutex_lock(&lock);
-            ebpf_send_statistic_data();
 
-            if (thread_enabled == NETDATA_THREAD_EBPF_RUNNING) {
-                if (publish_global) {
-                    ebpf_process_send_data(em);
-                }
+            if (publish_global) {
+                ebpf_process_send_data(em);
+            }
 
-                if (apps_enabled & NETDATA_EBPF_APPS_FLAG_CHART_CREATED) {
-                    ebpf_process_send_apps_data(apps_groups_root_target, em);
-                }
+            if (apps_enabled & NETDATA_EBPF_APPS_FLAG_CHART_CREATED) {
+                ebpf_process_send_apps_data(apps_groups_root_target, em);
+            }
 
 #ifdef NETDATA_DEV_MODE
-                if (ebpf_aral_process_stat)
-                    ebpf_send_data_aral_chart(ebpf_aral_process_stat, em);
+            if (ebpf_aral_process_stat)
+                ebpf_send_data_aral_chart(ebpf_aral_process_stat, em);
 #endif
 
-                if (cgroups && shm_ebpf_cgroup.header) {
-                    ebpf_process_send_cgroup_data(em);
-                }
+            if (cgroups && shm_ebpf_cgroup.header) {
+                ebpf_process_send_cgroup_data(em);
             }
+
             pthread_mutex_unlock(&lock);
             pthread_mutex_unlock(&collect_data_mutex);
+
+            pthread_mutex_lock(&ebpf_exit_cleanup);
+            if (running_time && !em->running_time)
+                running_time = update_every;
+            else
+                running_time += update_every;
+
+            em->running_time = running_time;
+            pthread_mutex_unlock(&ebpf_exit_cleanup);
         }
 
         fflush(stdout);
@@ -1254,7 +1325,6 @@ void *ebpf_process_thread(void *ptr)
     if (ebpf_process_enable_tracepoints()) {
         em->enabled = em->global_charts = em->apps_charts = em->cgroup_charts = NETDATA_THREAD_EBPF_STOPPING;
     }
-    process_enabled = em->enabled;
     pthread_mutex_unlock(&ebpf_exit_cleanup);
 
     pthread_mutex_lock(&lock);
@@ -1276,27 +1346,22 @@ void *ebpf_process_thread(void *ptr)
         process_aggregated_data, process_publish_aggregated, process_dimension_names, process_id_names,
         algorithms, NETDATA_KEY_PUBLISH_PROCESS_END);
 
-    if (process_enabled == NETDATA_THREAD_EBPF_RUNNING) {
-        ebpf_create_global_charts(em);
-    }
+    ebpf_create_global_charts(em);
 
     ebpf_update_stats(&plugin_statistics, em);
-    ebpf_update_kernel_memory_with_vector(&plugin_statistics, em->maps);
+    ebpf_update_kernel_memory_with_vector(&plugin_statistics, em->maps, EBPF_ACTION_STAT_ADD);
 
 #ifdef NETDATA_DEV_MODE
     if (ebpf_aral_process_stat)
-        ebpf_statistic_create_aral_chart(NETDATA_EBPF_PROC_ARAL_NAME, em);
+        process_disable_priority = ebpf_statistic_create_aral_chart(NETDATA_EBPF_PROC_ARAL_NAME, em);
 #endif
-
-    ebpf_create_statistic_charts(em);
 
     pthread_mutex_unlock(&lock);
 
     process_collector(em);
 
     pthread_mutex_lock(&ebpf_exit_cleanup);
-    if (em->enabled == NETDATA_THREAD_EBPF_RUNNING)
-        ebpf_update_disabled_plugin_stats(em);
+    ebpf_update_disabled_plugin_stats(em);
     pthread_mutex_unlock(&ebpf_exit_cleanup);
 
     netdata_thread_cleanup_pop(1);

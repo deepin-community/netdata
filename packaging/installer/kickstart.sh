@@ -2,18 +2,12 @@
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Next unused error code: F0515
+# Next unused error code: F0516
 
 # ======================================================================
 # Constants
 
-AGENT_BUG_REPORT_URL="https://github.com/netdata/netdata/issues/new/choose"
-CLOUD_BUG_REPORT_URL="https://github.com/netdata/netdata-cloud/issues/new/choose"
 DEFAULT_RELEASE_CHANNEL="nightly"
-DISCORD_INVITE="https://discord.gg/5ygS846fR6"
-DISCUSSIONS_URL="https://github.com/netdata/netdata/discussions"
-DOCS_URL="https://learn.netdata.cloud/docs/"
-FORUM_URL="https://community.netdata.cloud/"
 KICKSTART_OPTIONS="${*}"
 KICKSTART_SOURCE="$(
     self=${0}
@@ -25,16 +19,28 @@ KICKSTART_SOURCE="$(
     cd "${self%/*}" || exit 1
     echo "$(pwd -P)/${self##*/}"
 )"
-PACKAGES_SCRIPT="https://raw.githubusercontent.com/netdata/netdata/master/packaging/installer/install-required-packages.sh"
 DEFAULT_PLUGIN_PACKAGES=""
 PATH="${PATH}:/usr/local/bin:/usr/local/sbin"
-PUBLIC_CLOUD_URL="https://app.netdata.cloud"
-REPOCONFIG_DEB_URL_PREFIX="https://repo.netdata.cloud/repos/repoconfig"
 REPOCONFIG_DEB_VERSION="2-1"
-REPOCONFIG_RPM_URL_PREFIX="https://repo.netdata.cloud/repos/repoconfig"
 REPOCONFIG_RPM_VERSION="2-1"
 START_TIME="$(date +%s)"
 STATIC_INSTALL_ARCHES="x86_64 armv7l aarch64 ppc64le"
+
+# ======================================================================
+# URLs used throughout the script
+
+AGENT_BUG_REPORT_URL="https://github.com/netdata/netdata/issues/new/choose"
+CLOUD_BUG_REPORT_URL="https://github.com/netdata/netdata-cloud/issues/new/choose"
+DISCORD_INVITE="https://discord.gg/5ygS846fR6"
+DISCUSSIONS_URL="https://github.com/netdata/netdata/discussions"
+DOCS_URL="https://learn.netdata.cloud/docs/"
+FORUM_URL="https://community.netdata.cloud/"
+INSTALL_DOC_URL="https://learn.netdata.cloud/docs/install-the-netdata-agent/one-line-installer-for-all-linux-systems"
+PACKAGES_SCRIPT="https://raw.githubusercontent.com/netdata/netdata/master/packaging/installer/install-required-packages.sh"
+PUBLIC_CLOUD_URL="https://app.netdata.cloud"
+RELEASE_INFO_URL="https://repo.netdata.cloud/releases"
+REPOCONFIG_DEB_URL_PREFIX="https://repo.netdata.cloud/repos/repoconfig"
+REPOCONFIG_RPM_URL_PREFIX="https://repo.netdata.cloud/repos/repoconfig"
 TELEMETRY_URL="https://us-east1-netdata-analytics-bi.cloudfunctions.net/ingest_agent_events"
 
 # ======================================================================
@@ -45,7 +51,7 @@ SELECTED_INSTALL_METHOD="none"
 INSTALL_TYPE="unknown"
 INSTALL_PREFIX=""
 NETDATA_AUTO_UPDATES="default"
-NETDATA_CLAIM_URL="https://api.netdata.cloud"
+NETDATA_CLAIM_URL="https://app.netdata.cloud"
 NETDATA_COMMAND="default"
 NETDATA_DISABLE_CLOUD=0
 NETDATA_INSTALLER_OPTIONS=""
@@ -83,6 +89,7 @@ CURL="$(PATH="${PATH}:/opt/netdata/bin" command -v curl 2>/dev/null && true)"
 BADCACHE_MSG="Usually this is a result of an older copy of the file being cached somewhere upstream and can be resolved by retrying in an hour"
 BADNET_MSG="This is usually a result of a networking issue"
 ERROR_F0003="Could not find a usable HTTP client. Either curl or wget is required to proceed with installation."
+BADOPT_MSG="If you are following a third-party guide online, please see ${INSTALL_DOC_URL} for current instructions for using this script. If you are using a local copy of this script instead of fetching it from our servers, consider updating it. If you intended to pass this option to the installer code, please use either --local-build-options or --static-install-options to specify it instead."
 
 # ======================================================================
 # Core program logic
@@ -251,14 +258,16 @@ telemetry_event() {
     TOTAL_RAM="$((TOTAL_RAM * 1024))"
   fi
 
+  MD5_PATH="$(exec <&- 2>&-; which md5sum || command -v md5sum || type md5sum)"
+
   if [ "${KERNEL_NAME}" = Darwin ] && command -v ioreg >/dev/null 2>&1; then
     DISTINCT_ID="macos-$(ioreg -rd1 -c IOPlatformExpertDevice | awk '/IOPlatformUUID/ { split($0, line, "\""); printf("%s\n", line[4]); }')"
-  elif [ -f /etc/machine-id ]; then
-    DISTINCT_ID="machine-$(cat /etc/machine-id)"
-  elif [ -f /var/db/dbus/machine-id ]; then
-    DISTINCT_ID="dbus-$(cat /var/db/dbus/machine-id)"
-  elif [ -f /var/lib/dbus/machine-id ]; then
-    DISTINCT_ID="dbus-$(cat /var/lib/dbus/machine-id)"
+  elif [ -f /etc/machine-id ] && [ -n "$MD5_PATH" ]; then
+    DISTINCT_ID="machine-$($MD5_PATH < /etc/machine-id | cut -f1 -d" ")"
+  elif [ -f /var/db/dbus/machine-id ] && [ -n "$MD5_PATH" ]; then
+    DISTINCT_ID="dbus-$($MD5_PATH < /var/db/dbus/machine-id | cut -f1 -d" ")"
+  elif [ -f /var/lib/dbus/machine-id ] && [ -n "$MD5_PATH" ]; then
+    DISTINCT_ID="dbus-$($MD5_PATH < /var/lib/dbus/machine-id | cut -f1 -d" ")"
   elif command -v uuidgen > /dev/null 2>&1; then
     DISTINCT_ID="uuid-$(uuidgen | tr '[:upper:]' '[:lower:]')"
   else
@@ -294,7 +303,8 @@ telemetry_event() {
     "system_kernel_name": "${KERNEL_NAME}",
     "system_kernel_version": "$(uname -r)",
     "system_architecture": "$(uname -m)",
-    "system_total_ram": "${TOTAL_RAM:-unknown}"
+    "system_total_ram": "${TOTAL_RAM:-unknown}",
+    "system_distinct_id": "${DISTINCT_ID}"
   }
 }
 EOF
@@ -405,6 +415,7 @@ success_banner() {
 cleanup() {
   if [ -z "${NO_CLEANUP}" ] && [ -n "${tmpdir}" ]; then
     cd || true
+    DRY_RUN=0
     run_as_root rm -rf "${tmpdir}"
   fi
 }
@@ -604,6 +615,22 @@ download() {
   fi
 }
 
+get_actual_version() {
+    major="${1}"
+    channel="${2}"
+    url="${RELEASE_INFO_URL}/${channel}/${major}"
+
+    if check_for_remote_file "${RELEASE_INFO_URL}"; then
+        if check_for_remote_file "${url}"; then
+            download "${url}" -
+        else
+            echo "NONE"
+        fi
+    else
+        echo ""
+    fi
+}
+
 get_redirect() {
   url="${1}"
 
@@ -668,10 +695,22 @@ get_system_info() {
           DISTRO_COMPAT_NAME="${DISTRO}"
       else
           case "${DISTRO}" in
-          opensuse-leap) DISTRO_COMPAT_NAME="opensuse" ;;
-          cloudlinux|almalinux|rocky|rhel) DISTRO_COMPAT_NAME="centos" ;;
-          artix|manjaro|obarun) DISTRO_COMPAT_NAME="arch" ;;
-          *) DISTRO_COMPAT_NAME="unknown" ;;
+          opensuse-leap)
+              DISTRO_COMPAT_NAME="opensuse"
+              ;;
+          opensuse-tumbleweed)
+              DISTRO_COMPAT_NAME="opensuse"
+              SYSVERSION="tumbleweed"
+              ;;
+          cloudlinux|almalinux|centos-stream|rocky|rhel)
+              DISTRO_COMPAT_NAME="centos"
+              ;;
+          artix|manjaro|obarun)
+              DISTRO_COMPAT_NAME="arch"
+              ;;
+          *)
+              DISTRO_COMPAT_NAME="unknown"
+              ;;
           esac
       fi
 
@@ -793,7 +832,7 @@ uninstall() {
     FLAGS="--yes"
   fi
 
-  if [ -x "${uninstaller}" ]; then
+  if run_as_root test -x "${uninstaller}"; then
     if [ "${DRY_RUN}" -eq 1 ]; then
       progress "Would attempt to uninstall existing install with uninstaller script found at: ${uninstaller}"
       return 0
@@ -859,9 +898,8 @@ detect_existing_install() {
   if [ -n "${ndprefix}" ]; then
     typefile="${ndprefix}/etc/netdata/.install-type"
     if [ -r "${typefile}" ]; then
-      run_as_root sh -c "cat \"${typefile}\" > \"${tmpdir}/install-type\""
       # shellcheck disable=SC1090,SC1091
-      . "${tmpdir}/install-type"
+      . "${typefile}"
     else
       INSTALL_TYPE="unknown"
     fi
@@ -869,9 +907,8 @@ detect_existing_install() {
     envfile="${ndprefix}/etc/netdata/.environment"
     if [ "${INSTALL_TYPE}" = "unknown" ] || [ "${INSTALL_TYPE}" = "custom" ]; then
       if [ -r "${envfile}" ]; then
-        run_as_root sh -c "cat \"${envfile}\" > \"${tmpdir}/environment\""
-        # shellcheck disable=SC1091
-        . "${tmpdir}/environment"
+        # shellcheck disable=SC1090,SC1091
+        . "${envfile}"
         if [ -n "${NETDATA_IS_STATIC_INSTALL}" ]; then
           if [ "${NETDATA_IS_STATIC_INSTALL}" = "yes" ]; then
             INSTALL_TYPE="legacy-static"
@@ -896,7 +933,7 @@ handle_existing_install() {
     kickstart-*|legacy-*|binpkg-*|manual-static|unknown)
       if [ "${INSTALL_TYPE}" = "unknown" ]; then
         if [ "${EXISTING_INSTALL_IS_NATIVE}" -eq 1 ]; then
-          warning "Found an existing netdata install managed by the system package manager, but could not determine the install type. Usually this means you installed an unsupported third-party netdata package."
+          warning "Found an existing netdata install managed by the system package manager, but could not determine the install type. Usually this means you installed an unsupported third-party netdata package. This script supports claiming most such installs, but attempting to update or reinstall them using this script may be dangerous."
         else
           warning "Found an existing netdata install at ${ndprefix}, but could not determine the install type. Usually this means you installed Netdata through your distribution’s regular package repositories or some other unsupported method."
         fi
@@ -940,7 +977,7 @@ handle_existing_install() {
           promptmsg="Attempting to update an installation managed by the system package manager is known to not work in most cases. If you are trying to install the latest version of Netdata, you will need to manually uninstall it through your system package manager. ${claimonly_notice} Are you sure you want to continue?"
         else
           failmsg="We do not support trying to update or claim installations when we cannot determine the install type. You will need to uninstall the existing install using the same method you used to install it to proceed. ${claimonly_notice}"
-          promptmsg="Attempting to update an existing install is not officially supported. It may work, but it also might break your system. ${claimonly_notice} Are you sure you want to continue?"
+          promptmsg="Attempting to update an existing install with an unknown installation type is not officially supported. It may work, but it also might break your system. ${claimonly_notice} Are you sure you want to continue?"
         fi
         if [ "${INTERACTIVE}" -eq 0 ] && [ "${ACTION}" != "claim" ]; then
           fatal "${failmsg}" F0106
@@ -1301,24 +1338,20 @@ netdata_avail_check() {
 
 # Check for any distro-specific dependencies we know we need.
 check_special_native_deps() {
-  if [ "${DISTRO_COMPAT_NAME}" = "centos" ] && [ "${SYSVERSION}" = "7" ]; then
-    progress "Checking for libuv availability."
-    if ${pm_cmd} search --nogpgcheck -v libuv | grep -q "No matches found"; then
-      progress "libuv not found, checking for EPEL availability."
-      if ${pm_cmd} search --nogpgcheck -v epel-release | grep -q "No matches found"; then
-        warning "Unable to find a suitable source for libuv, cannot install using native packages on this system."
-        return 1
-      else
-        progress "EPEL is available, attempting to install so that required dependencies are available."
+  if [ "${DISTRO_COMPAT_NAME}" = "centos" ] && [ "${SYSVERSION}" -gt 6 ]; then
+    progress "EPEL is required on this system, checking if it’s available."
 
-        # shellcheck disable=SC2086
-        if ! run_as_root env ${env} ${pm_cmd} install ${pkg_install_opts} epel-release; then
-          warning "Failed to install EPEL, even though it is required to install native packages on this system."
-          return 1
-        fi
-      fi
+    if ${pm_cmd} search --nogpgcheck -v epel-release | grep -q "No matches found"; then
+      warning "Unable to find a suitable source for libuv, cannot install using native packages on this system."
+      return 1
     else
-      return 0
+      progress "EPEL is available, attempting to install so that required dependencies are available."
+
+      # shellcheck disable=SC2086
+      if ! run_as_root env ${env} ${pm_cmd} ${install_subcmd} ${pkg_install_opts} epel-release; then
+        warning "Failed to install EPEL, even though it is required to install native packages on this system."
+        return 1
+      fi
     fi
   fi
 }
@@ -1332,12 +1365,16 @@ common_rpm_opts() {
 }
 
 common_dnf_opts() {
+  if [ "${INTERACTIVE}" = "0" ]; then
+    interactive_opts="-y"
+  fi
   if command -v dnf > /dev/null; then
     pm_cmd="dnf"
     repo_subcmd="makecache"
   else
     pm_cmd="yum"
   fi
+  install_subcmd="install"
   pkg_install_opts="${interactive_opts}"
   repo_update_opts="${interactive_opts}"
   uninstall_subcmd="remove"
@@ -1372,16 +1409,18 @@ try_package_install() {
     release=""
   fi
 
-  if [ "${INTERACTIVE}" = "0" ]; then
-    interactive_opts="-y"
-    env="DEBIAN_FRONTEND=noninteractive"
-  else
-    interactive_opts=""
-    env=""
-  fi
+  interactive_opts=""
+  env=""
 
   case "${DISTRO_COMPAT_NAME}" in
     debian|ubuntu)
+      if [ "${INTERACTIVE}" = "0" ]; then
+        install_subcmd="-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold install"
+        interactive_opts="-y"
+        env="DEBIAN_FRONTEND=noninteractive"
+      else
+        install_subcmd="install"
+      fi
       needs_early_refresh=1
       pm_cmd="apt-get"
       repo_subcmd="update"
@@ -1409,6 +1448,11 @@ try_package_install() {
       repo_prefix="${DISTRO_COMPAT_NAME}/${SYSVERSION}"
       ;;
     opensuse)
+      if [ "${INTERACTIVE}" = "0" ]; then
+        install_subcmd="--non-interactive --no-gpg-checks install"
+      else
+        install_subcmd="--no-gpg-checks install"
+      fi
       common_rpm_opts
       pm_cmd="zypper"
       repo_subcmd="--gpg-auto-import-keys refresh"
@@ -1479,7 +1523,7 @@ try_package_install() {
     fi
 
     # shellcheck disable=SC2086
-    if ! run_as_root env ${env} ${pm_cmd} install ${pkg_install_opts} "${tmpdir}/${repoconfig_file}"; then
+    if ! run_as_root env ${env} ${pm_cmd} ${install_subcmd} ${pkg_install_opts} "${tmpdir}/${repoconfig_file}"; then
       warning "Failed to install repository configuration package."
       return 2
     fi
@@ -1528,7 +1572,7 @@ try_package_install() {
   fi
 
   # shellcheck disable=SC2086
-  if ! run_as_root env ${env} ${pm_cmd} install ${pkg_install_opts} "netdata${NATIVE_VERSION}"; then
+  if ! run_as_root env ${env} ${pm_cmd} ${install_subcmd} ${pkg_install_opts} "netdata${NATIVE_VERSION}"; then
     warning "Failed to install Netdata package."
     if [ -z "${NO_CLEANUP}" ]; then
       progress "Attempting to uninstall repository configuration package."
@@ -1541,7 +1585,7 @@ try_package_install() {
   if [ -n "${explicitly_install_native_plugins}" ]; then
     progress "Installing external plugins."
     # shellcheck disable=SC2086
-    if ! run_as_root env ${env} ${pm_cmd} install ${DEFAULT_PLUGIN_PACKAGES}; then
+    if ! run_as_root env ${env} ${pm_cmd} ${install_subcmd} ${DEFAULT_PLUGIN_PACKAGES}; then
       warning "Failed to install external plugin packages. Some collectors may not be available."
     fi
   fi
@@ -1994,6 +2038,40 @@ install_on_freebsd() {
 # ======================================================================
 # Argument parsing code
 
+handle_major_version() {
+  CONTINUE_INSTALL_PROMPT="Attempting to install will use the latest version available overall. Do you wish to continue the install?"
+
+  if [ -z "${INSTALL_MAJOR_VERSION}" ]; then
+    return
+  fi
+
+  actual_version="$(get_actual_version "v${INSTALL_MAJOR_VERSION}" "${RELEASE_CHANNEL}")"
+
+  if [ -z "${actual_version}" ]; then
+    if [ "${INTERACTIVE}" -eq 0 ]; then
+      fatal "Could not determine the lastest releaase in channel '${RELEASE_CHANNEL}' with major version '${INSTALL_MAJOR_VERSION}'" F0517
+    else
+      if confirm "Unable to determine the correct version to install for major version '${INSTALL_MAJOR_VERSION}'. ${CONTINUE_INSTALL_PROMPT}"; then
+        progress "User requested continuing the install with the latest version."
+      else
+        fatal "Cancelling installation at user request." F0518
+      fi
+    fi
+  elif [ "${actual_version}" = 'NONE' ]; then
+    if [ "${INTERACTIVE}" -eq 0 ]; then
+      warning "No releases with major version '${INSTALL_MAJOR_VERSION}' have been published. Continuing the install with the latest version instead."
+    else
+      if confirm "No releases with major version '${INSTALL_MAJOR_VERSION}' have been published. ${CONTINUE_INSTALL_PROMPT}"; then
+        progress "User requested continuing the install with the latest version."
+      else
+        fatal "Cancelling installation at user request." F0519
+      fi
+    fi
+  else
+    INSTALL_VERSION="${actual_version}"
+  fi
+}
+
 validate_args() {
   check_claim_opts
 
@@ -2025,22 +2103,6 @@ validate_args() {
     esac
   fi
 
-  if [ -n "${NETDATA_OFFLINE_INSTALL_SOURCE}" ] && [ -n "${INSTALL_VERSION}" ]; then
-      fatal "Specifying an install version alongside an offline install source is not supported." F050A
-  fi
-
-  if [ "${NETDATA_AUTO_UPDATES}" = "default" ]; then
-    if [ -n "${NETDATA_OFFLINE_INSTALL_SOURCE}" ] || [ -n "${INSTALL_VERSION}" ]; then
-      AUTO_UPDATE=0
-    else
-      AUTO_UPDATE=1
-    fi
-  elif [ "${NETDATA_AUTO_UPDATES}" = 1 ]; then
-    AUTO_UPDATE=1
-  else
-    AUTO_UPDATE=0
-  fi
-
   if [ "${RELEASE_CHANNEL}" = "default" ]; then
     if [ -n "${NETDATA_OFFLINE_INSTALL_SOURCE}" ]; then
       SELECTED_RELEASE_CHANNEL="$(cat "${NETDATA_OFFLINE_INSTALL_SOURCE}/channel")"
@@ -2057,6 +2119,31 @@ validate_args() {
     fi
 
     SELECTED_RELEASE_CHANNEL="${RELEASE_CHANNEL}"
+  fi
+
+  if [ -n "${INSTALL_MAJOR_VERSION}" ] && [ -n "${INSTALL_VERSION}" ]; then
+    fatal "Only one of --install-version or --install-major-version may be specified." F0515
+  fi
+
+  handle_major_version # Appropriately updates INSTALL_VERSION if INSTALL_MAJOR_VERSION is set.
+
+  if [ -n "${NETDATA_OFFLINE_INSTALL_SOURCE}" ] && [ -n "${INSTALL_VERSION}" ]; then
+      fatal "Specifying an install version alongside an offline install source is not supported." F050A
+  fi
+
+  if [ "${NETDATA_AUTO_UPDATES}" = "default" ]; then
+    if [ -n "${NETDATA_OFFLINE_INSTALL_SOURCE}" ] || [ -n "${INSTALL_VERSION}" ]; then
+      AUTO_UPDATE=0
+    else
+      AUTO_UPDATE=1
+    fi
+  elif [ "${NETDATA_INSTALL_MAJOR_VERSION}" ]; then
+    warning "Forcibly disabling auto updates as a specific major version was requested."
+    AUTO_UPDATE=0
+  elif [ "${NETDATA_AUTO_UPDATES}" = 1 ]; then
+    AUTO_UPDATE=1
+  else
+    AUTO_UPDATE=0
   fi
 }
 
@@ -2103,7 +2190,7 @@ parse_args() {
       "--claim-only") set_action 'claim' ;;
       "--no-updates") NETDATA_AUTO_UPDATES=0 ;;
       "--auto-update") NETDATA_AUTO_UPDATES="1" ;;
-      "--auto-update-method")
+      "--auto-update-type"|"--auto-update-method")
         NETDATA_AUTO_UPDATE_TYPE="$(echo "${2}" | tr '[:upper:]' '[:lower:]')"
         case "${NETDATA_AUTO_UPDATE_TYPE}" in
           systemd|interval|crontab) shift 1 ;;
@@ -2135,6 +2222,10 @@ parse_args() {
         ;;
       "--old-install-prefix")
         OLD_INSTALL_PREFIX="${2}"
+        shift 1
+        ;;
+      "--install-major-version")
+        INSTALL_MAJOR_VERSION="${2}"
         shift 1
         ;;
       "--install-version")
@@ -2213,7 +2304,8 @@ parse_args() {
           fatal "A source directory must be specified with the --offline-install-source option." F0501
         fi
         ;;
-      *) fatal "Unrecognized option '${1}'. If you intended to pass this option to the installer code, please use either --local-build-options or --static-install-options to specify it instead." F050E ;;
+      "--"|"all"|"--yes"|"-y"|"--force"|"--accept") warning "Option '${1}' is not recognized, ignoring it. ${BADOPT_MSG}" ;;
+      *) fatal "Unrecognized option '${1}'. ${BADOPT_MSG}" F050E ;;
     esac
     shift 1
   done

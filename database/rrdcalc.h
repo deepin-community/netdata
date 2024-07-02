@@ -28,6 +28,8 @@ typedef enum {
     RRDCALC_FLAG_FROM_TEMPLATE              = (1 << 10), // the rrdcalc has been created from a template
 } RRDCALC_FLAGS;
 
+void rrdcalc_flags_to_json_array(BUFFER *wb, const char *key, RRDCALC_FLAGS flags);
+
 typedef enum {
     // This list uses several other options from RRDR_OPTIONS for db lookups.
     // To add an item here, you need to reserve a bit in RRDR_OPTIONS.
@@ -62,8 +64,10 @@ struct rrdcalc {
 
     STRING *source;                 // the source of this alarm
     STRING *units;                  // the units of the alarm
+    STRING *summary;                // a short alert summary
+    STRING *original_summary;       // the original summary field before any variable replacement
     STRING *original_info;          // the original info field before any variable replacement
-    STRING *info;                   // a short description of the alarm
+    STRING *info;                   // a description of the alarm
 
     int update_every;               // update frequency for the alarm
 
@@ -120,6 +124,7 @@ struct rrdcalc {
 
     NETDATA_DOUBLE value;           // the current value of the alarm
     NETDATA_DOUBLE old_value;       // the previous value of the alarm
+    NETDATA_DOUBLE last_status_change_value; // the value at the last status change
 
     RRDCALC_FLAGS run_flags;        // check RRDCALC_FLAG_*
 
@@ -136,6 +141,7 @@ struct rrdcalc {
     int delay_up_current;           // the current up notification delay duration
     int delay_down_current;         // the current down notification delay duration
     int delay_last;                 // the last delay we used
+    ALARM_ENTRY *ae;                // last alarm entry
 
     // ------------------------------------------------------------------------
     // variables this alarm exposes to the rest of the alarms
@@ -166,6 +172,8 @@ struct rrdcalc {
 #define rrdcalc_module_match(rc) string2str((rc)->module_match)
 #define rrdcalc_source(rc) string2str((rc)->source)
 #define rrdcalc_units(rc) string2str((rc)->units)
+#define rrdcalc_original_summary(rc) string2str((rc)->original_summary)
+#define rrdcalc_summary(rc) string2str((rc)->summary)
 #define rrdcalc_original_info(rc) string2str((rc)->original_info)
 #define rrdcalc_info(rc) string2str((rc)->info)
 #define rrdcalc_dimensions(rc) string2str((rc)->dimensions)
@@ -188,7 +196,6 @@ struct alert_config {
     STRING *os;
     STRING *host;
     STRING *on;
-    STRING *families;
     STRING *plugin;
     STRING *module;
     STRING *charts;
@@ -202,6 +209,7 @@ struct alert_config {
     STRING *exec;
     STRING *to;
     STRING *units;
+    STRING *summary;
     STRING *info;
     STRING *classification;
     STRING *component;
@@ -211,6 +219,7 @@ struct alert_config {
     STRING *repeat;
     STRING *host_labels;
     STRING *chart_labels;
+    STRING *source;
 
     STRING *p_db_lookup_dimensions;
     STRING *p_db_lookup_method;
@@ -235,7 +244,7 @@ const char *rrdcalc_status2string(RRDCALC_STATUS status);
 
 void rrdcalc_free_unused_rrdcalc_loaded_from_config(RRDCALC *rc);
 
-uint32_t rrdcalc_get_unique_id(RRDHOST *host, STRING *chart, STRING *name, uint32_t *next_event_id);
+uint32_t rrdcalc_get_unique_id(RRDHOST *host, STRING *chart, STRING *name, uint32_t *next_event_id, uuid_t *config_hash_id);
 void rrdcalc_add_from_rrdcalctemplate(RRDHOST *host, RRDCALCTEMPLATE *rt, RRDSET *st, const char *overwrite_alert_name, const char *overwrite_dimensions);
 int rrdcalc_add_from_config(RRDHOST *host, RRDCALC *rc);
 

@@ -8,6 +8,79 @@ inline void health_alarm_log_save(RRDHOST *host, ALARM_ENTRY *ae) {
     sql_health_alarm_log_save(host, ae);
 }
 
+
+void health_log_alert_transition_with_trace(RRDHOST *host, ALARM_ENTRY *ae, int line, const char *file, const char *function) {
+    ND_LOG_STACK lgs[] = {
+            ND_LOG_FIELD_UUID(NDF_MESSAGE_ID, &health_alert_transition_msgid),
+            ND_LOG_FIELD_STR(NDF_NIDL_NODE, host->hostname),
+            ND_LOG_FIELD_STR(NDF_NIDL_INSTANCE, ae->chart_name),
+            ND_LOG_FIELD_STR(NDF_NIDL_CONTEXT, ae->chart_context),
+            ND_LOG_FIELD_U64(NDF_ALERT_ID, ae->alarm_id),
+            ND_LOG_FIELD_U64(NDF_ALERT_UNIQUE_ID, ae->unique_id),
+            ND_LOG_FIELD_U64(NDF_ALERT_EVENT_ID, ae->alarm_event_id),
+            ND_LOG_FIELD_UUID(NDF_ALERT_CONFIG_HASH, &ae->config_hash_id),
+            ND_LOG_FIELD_UUID(NDF_ALERT_TRANSITION_ID, &ae->transition_id),
+            ND_LOG_FIELD_STR(NDF_ALERT_NAME, ae->name),
+            ND_LOG_FIELD_STR(NDF_ALERT_CLASS, ae->classification),
+            ND_LOG_FIELD_STR(NDF_ALERT_COMPONENT, ae->component),
+            ND_LOG_FIELD_STR(NDF_ALERT_TYPE, ae->type),
+            ND_LOG_FIELD_STR(NDF_ALERT_EXEC, ae->exec),
+            ND_LOG_FIELD_STR(NDF_ALERT_RECIPIENT, ae->recipient),
+            ND_LOG_FIELD_STR(NDF_ALERT_SOURCE, ae->exec),
+            ND_LOG_FIELD_STR(NDF_ALERT_UNITS, ae->units),
+            ND_LOG_FIELD_STR(NDF_ALERT_SUMMARY, ae->summary),
+            ND_LOG_FIELD_STR(NDF_ALERT_INFO, ae->info),
+            ND_LOG_FIELD_DBL(NDF_ALERT_VALUE, ae->new_value),
+            ND_LOG_FIELD_DBL(NDF_ALERT_VALUE_OLD, ae->old_value),
+            ND_LOG_FIELD_TXT(NDF_ALERT_STATUS, rrdcalc_status2string(ae->new_status)),
+            ND_LOG_FIELD_TXT(NDF_ALERT_STATUS_OLD, rrdcalc_status2string(ae->old_status)),
+            ND_LOG_FIELD_I64(NDF_ALERT_DURATION, ae->duration),
+            ND_LOG_FIELD_I64(NDF_RESPONSE_CODE, ae->exec_code),
+            ND_LOG_FIELD_U64(NDF_ALERT_NOTIFICATION_REALTIME_USEC, ae->delay_up_to_timestamp * USEC_PER_SEC),
+            ND_LOG_FIELD_END(),
+    };
+    ND_LOG_STACK_PUSH(lgs);
+
+    errno = 0;
+
+    ND_LOG_FIELD_PRIORITY priority = NDLP_INFO;
+
+    switch(ae->new_status) {
+        case RRDCALC_STATUS_UNDEFINED:
+            if(ae->old_status >= RRDCALC_STATUS_CLEAR)
+                priority = NDLP_NOTICE;
+            else
+                priority = NDLP_DEBUG;
+            break;
+
+        default:
+        case RRDCALC_STATUS_UNINITIALIZED:
+        case RRDCALC_STATUS_REMOVED:
+            priority = NDLP_DEBUG;
+            break;
+
+        case RRDCALC_STATUS_CLEAR:
+            priority = NDLP_INFO;
+            break;
+
+        case RRDCALC_STATUS_WARNING:
+            if(ae->old_status < RRDCALC_STATUS_WARNING)
+                priority = NDLP_WARNING;
+            break;
+
+        case RRDCALC_STATUS_CRITICAL:
+            if(ae->old_status < RRDCALC_STATUS_CRITICAL)
+                priority = NDLP_CRIT;
+            break;
+    }
+
+    netdata_logger(NDLS_HEALTH, priority, file, function, line,
+           "ALERT '%s' of instance '%s' on node '%s', transitioned from %s to %s",
+           string2str(ae->name), string2str(ae->chart), string2str(host->hostname),
+           rrdcalc_status2string(ae->old_status), rrdcalc_status2string(ae->new_status)
+           );
+}
+
 // ----------------------------------------------------------------------------
 // health alarm log management
 
@@ -20,7 +93,7 @@ inline ALARM_ENTRY* health_create_alarm_entry(
     STRING *name,
     STRING *chart,
     STRING *chart_context,
-    STRING *family,
+    STRING *chart_name,
     STRING *class,
     STRING *component,
     STRING *type,
@@ -33,22 +106,28 @@ inline ALARM_ENTRY* health_create_alarm_entry(
     RRDCALC_STATUS new_status,
     STRING *source,
     STRING *units,
+    STRING *summary,
     STRING *info,
     int delay,
-    uint32_t flags
+    HEALTH_ENTRY_FLAGS flags
 ) {
-    debug(D_HEALTH, "Health adding alarm log entry with id: %u", host->health_log.next_log_id);
+
+    if (duration < 0)
+        duration = 0;
+
+    netdata_log_debug(D_HEALTH, "Health adding alarm log entry with id: %u", host->health_log.next_log_id);
 
     ALARM_ENTRY *ae = callocz(1, sizeof(ALARM_ENTRY));
     ae->name = string_dup(name);
     ae->chart = string_dup(chart);
     ae->chart_context = string_dup(chart_context);
+    ae->chart_name = string_dup(chart_name);
 
     uuid_copy(ae->config_hash_id, *((uuid_t *) config_hash_id));
 
     uuid_generate_random(ae->transition_id);
+    ae->global_id = now_realtime_usec();
 
-    ae->family = string_dup(family);
     ae->classification = string_dup(class);
     ae->component = string_dup(component);
     ae->type = string_dup(type);
@@ -68,6 +147,7 @@ inline ALARM_ENTRY* health_create_alarm_entry(
     ae->old_value_string = string_strdupz(format_value_and_unit(value_string, 100, ae->old_value, ae_units(ae), -1));
     ae->new_value_string = string_strdupz(format_value_and_unit(value_string, 100, ae->new_value, ae_units(ae), -1));
 
+    ae->summary = string_dup(summary);
     ae->info = string_dup(info);
     ae->old_status = old_status;
     ae->new_status = new_status;
@@ -88,19 +168,19 @@ inline void health_alarm_log_add_entry(
         RRDHOST *host,
         ALARM_ENTRY *ae
 ) {
-    debug(D_HEALTH, "Health adding alarm log entry with id: %u", ae->unique_id);
+    netdata_log_debug(D_HEALTH, "Health adding alarm log entry with id: %u", ae->unique_id);
 
     __atomic_add_fetch(&host->health_transitions, 1, __ATOMIC_RELAXED);
 
     // link it
-    netdata_rwlock_wrlock(&host->health_log.alarm_log_rwlock);
+    rw_spinlock_write_lock(&host->health_log.spinlock);
     ae->next = host->health_log.alarms;
     host->health_log.alarms = ae;
     host->health_log.count++;
-    netdata_rwlock_unlock(&host->health_log.alarm_log_rwlock);
+    rw_spinlock_write_unlock(&host->health_log.spinlock);
 
     // match previous alarms
-    netdata_rwlock_rdlock(&host->health_log.alarm_log_rwlock);
+    rw_spinlock_read_lock(&host->health_log.spinlock);
     ALARM_ENTRY *t;
     for(t = host->health_log.alarms ; t ; t = t->next) {
         if(t != ae && t->alarm_id == ae->alarm_id) {
@@ -120,7 +200,7 @@ inline void health_alarm_log_add_entry(
             break;
         }
     }
-    netdata_rwlock_unlock(&host->health_log.alarm_log_rwlock);
+    rw_spinlock_read_unlock(&host->health_log.spinlock);
 
     health_alarm_log_save(host, ae);
 }
@@ -129,7 +209,6 @@ inline void health_alarm_log_free_one_nochecks_nounlink(ALARM_ENTRY *ae) {
     string_freez(ae->name);
     string_freez(ae->chart);
     string_freez(ae->chart_context);
-    string_freez(ae->family);
     string_freez(ae->classification);
     string_freez(ae->component);
     string_freez(ae->type);
@@ -144,7 +223,7 @@ inline void health_alarm_log_free_one_nochecks_nounlink(ALARM_ENTRY *ae) {
 }
 
 inline void health_alarm_log_free(RRDHOST *host) {
-    netdata_rwlock_wrlock(&host->health_log.alarm_log_rwlock);
+    rw_spinlock_write_lock(&host->health_log.spinlock);
 
     ALARM_ENTRY *ae;
     while((ae = host->health_log.alarms)) {
@@ -152,5 +231,5 @@ inline void health_alarm_log_free(RRDHOST *host) {
         health_alarm_log_free_one_nochecks_nounlink(ae);
     }
 
-    netdata_rwlock_unlock(&host->health_log.alarm_log_rwlock);
+    rw_spinlock_write_unlock(&host->health_log.spinlock);
 }

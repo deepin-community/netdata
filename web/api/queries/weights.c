@@ -112,7 +112,7 @@ static void register_result(DICTIONARY *results, RRDHOST *host, RRDCONTEXT_ACQUI
 
     // we can use the pointer address or RMA as a unique key for each metric
     char buf[20 + 1];
-    ssize_t len = snprintfz(buf, 20, "%p", rma);
+    ssize_t len = snprintfz(buf, sizeof(buf) - 1, "%p", rma);
     dictionary_set_advanced(results, buf, len + 1, &t, sizeof(struct register_result), NULL);
 }
 
@@ -169,7 +169,7 @@ static size_t registered_results_to_json_charts(DICTIONARY *results, BUFFER *wb,
                                                 size_t examined_dimensions, usec_t duration,
                                                 WEIGHTS_STATS *stats) {
 
-    buffer_json_initialize(wb, "\"", "\"", 0, true, options & RRDR_OPTION_MINIFY);
+    buffer_json_initialize(wb, "\"", "\"", 0, true, (options & RRDR_OPTION_MINIFY) ? BUFFER_JSON_OPTIONS_MINIFY : BUFFER_JSON_OPTIONS_DEFAULT);
 
     results_header_to_json(results, wb, after, before, baseline_after, baseline_before,
                            points, method, group, options, shifts, examined_dimensions, duration, stats);
@@ -221,7 +221,7 @@ static size_t registered_results_to_json_contexts(DICTIONARY *results, BUFFER *w
                                                   size_t examined_dimensions, usec_t duration,
                                                   WEIGHTS_STATS *stats) {
 
-    buffer_json_initialize(wb, "\"", "\"", 0, true, options & RRDR_OPTION_MINIFY);
+    buffer_json_initialize(wb, "\"", "\"", 0, true, (options & RRDR_OPTION_MINIFY) ? BUFFER_JSON_OPTIONS_MINIFY : BUFFER_JSON_OPTIONS_DEFAULT);
 
     results_header_to_json(results, wb, after, before, baseline_after, baseline_before,
                            points, method, group, options, shifts, examined_dimensions, duration, stats);
@@ -717,7 +717,7 @@ static inline struct dict_unique_name_units *dict_unique_name_units_add(DICTIONA
 
 static inline struct dict_unique_id_name *dict_unique_id_name_add(DICTIONARY *dict, const char *id, const char *name, ssize_t *max_id) {
     char key[1024 + 1];
-    snprintfz(key, 1024, "%s:%s", id, name);
+    snprintfz(key, sizeof(key) - 1, "%s:%s", id, name);
     struct dict_unique_id_name *dun = dictionary_set(dict, key, NULL, sizeof(struct dict_unique_id_name));
     if(!dun->existing) {
         dun->existing = true;
@@ -739,7 +739,7 @@ static size_t registered_results_to_json_multinode_no_group_by(
         size_t examined_dimensions, struct query_weights_data *qwd,
         WEIGHTS_STATS *stats,
         struct query_versions *versions) {
-    buffer_json_initialize(wb, "\"", "\"", 0, true, options & RRDR_OPTION_MINIFY);
+    buffer_json_initialize(wb, "\"", "\"", 0, true, (options & RRDR_OPTION_MINIFY) ? BUFFER_JSON_OPTIONS_MINIFY : BUFFER_JSON_OPTIONS_DEFAULT);
     buffer_json_member_add_uint64(wb, "api", 2);
 
     results_header_to_json_v2(results, wb, qwd, after, before, baseline_after, baseline_before,
@@ -874,7 +874,7 @@ static size_t registered_results_to_json_multinode_no_group_by(
                 continue;
 
             buffer_json_add_array_item_object(wb);
-            buffer_json_node_add_v2(wb, dun->host, dun->i, dun->duration_ut);
+            buffer_json_node_add_v2(wb, dun->host, dun->i, dun->duration_ut, true);
             buffer_json_object_close(wb);
         }
         dfe_done(dun);
@@ -936,7 +936,7 @@ static size_t registered_results_to_json_multinode_no_group_by(
 
     buffer_json_object_close(wb); //dictionaries
 
-    buffer_json_agents_array_v2(wb, &qwd->timings, 0);
+    buffer_json_agents_v2(wb, &qwd->timings, 0, false, true);
     buffer_json_member_add_uint64(wb, "correlated_dimensions", total_dimensions);
     buffer_json_member_add_uint64(wb, "total_dimensions_count", examined_dimensions);
     buffer_json_finalize(wb);
@@ -958,7 +958,7 @@ static size_t registered_results_to_json_multinode_group_by(
         size_t examined_dimensions, struct query_weights_data *qwd,
         WEIGHTS_STATS *stats,
         struct query_versions *versions) {
-    buffer_json_initialize(wb, "\"", "\"", 0, true, options & RRDR_OPTION_MINIFY);
+    buffer_json_initialize(wb, "\"", "\"", 0, true, (options & RRDR_OPTION_MINIFY) ? BUFFER_JSON_OPTIONS_MINIFY : BUFFER_JSON_OPTIONS_DEFAULT);
     buffer_json_member_add_uint64(wb, "api", 2);
 
     results_header_to_json_v2(results, wb, qwd, after, before, baseline_after, baseline_before,
@@ -1067,7 +1067,7 @@ static size_t registered_results_to_json_multinode_group_by(
     dfe_done(aw);
     buffer_json_array_close(wb); // result
 
-    buffer_json_agents_array_v2(wb, &qwd->timings, 0);
+    buffer_json_agents_v2(wb, &qwd->timings, 0, false, true);
     buffer_json_member_add_uint64(wb, "correlated_dimensions", total_dimensions);
     buffer_json_member_add_uint64(wb, "total_dimensions_count", examined_dimensions);
     buffer_json_finalize(wb);
@@ -1244,7 +1244,7 @@ static double kstwo(
         return NAN;
 
     if(unlikely(base_size != baseline_points - 1 || high_size != highlight_points - 1)) {
-        error("Metric correlations: internal error - calculate_pairs_diff() returns the wrong number of entries");
+        netdata_log_error("Metric correlations: internal error - calculate_pairs_diff() returns the wrong number of entries");
         return NAN;
     }
 
@@ -1292,7 +1292,7 @@ NETDATA_DOUBLE *rrd2rrdr_ks2(
         stats->db_points_per_tier[tr] += r->internal.qt->db.tiers[tr].points;
 
     if(r->d != 1 || r->internal.qt->query.used != 1) {
-        error("WEIGHTS: on query '%s' expected 1 dimension in RRDR but got %zu r->d and %zu qt->query.used",
+        netdata_log_error("WEIGHTS: on query '%s' expected 1 dimension in RRDR but got %zu r->d and %zu qt->query.used",
               r->internal.qt->id, r->d, (size_t)r->internal.qt->query.used);
         goto cleanup;
     }
@@ -1368,11 +1368,11 @@ static void rrdset_metric_correlations_ks2(
 
         // these conditions should never happen, but still let's check
         if(unlikely(prob < 0.0)) {
-            error("Metric correlations: kstwo() returned a negative number: %f", prob);
+            netdata_log_error("Metric correlations: kstwo() returned a negative number: %f", prob);
             prob = -prob;
         }
         if(unlikely(prob > 1.0)) {
-            error("Metric correlations: kstwo() returned a number above 1.0: %f", prob);
+            netdata_log_error("Metric correlations: kstwo() returned a number above 1.0: %f", prob);
             prob = 1.0;
         }
 
@@ -1447,7 +1447,7 @@ static void rrdset_metric_correlations_volume(
     merge_query_value_to_stats(&highlight_countif, stats, 1);
 
     if(!netdata_double_isnumber(highlight_countif.value)) {
-        info("WEIGHTS: highlighted countif query failed, but highlighted average worked - strange...");
+        netdata_log_info("WEIGHTS: highlighted countif query failed, but highlighted average worked - strange...");
         return;
     }
 
@@ -1806,8 +1806,10 @@ int web_api_v12_weights(BUFFER *wb, QUERY_WEIGHTS_REQUEST *qwr) {
             }
     };
 
-    if(!rrdr_relative_window_to_absolute(&qwr->after, &qwr->before, NULL))
+    if(!rrdr_relative_window_to_absolute_query(&qwr->after, &qwr->before, NULL, false))
         buffer_no_cacheable(wb);
+    else
+        buffer_cacheable(wb);
 
     if (qwr->before <= qwr->after) {
         resp = HTTP_RESP_BAD_REQUEST;
@@ -1821,7 +1823,7 @@ int web_api_v12_weights(BUFFER *wb, QUERY_WEIGHTS_REQUEST *qwr) {
         if(qwr->baseline_before <= API_RELATIVE_TIME_MAX)
             qwr->baseline_before += qwr->after;
 
-        rrdr_relative_window_to_absolute(&qwr->baseline_after, &qwr->baseline_before, NULL);
+        rrdr_relative_window_to_absolute_query(&qwr->baseline_after, &qwr->baseline_before, NULL, false);
 
         if (qwr->baseline_before <= qwr->baseline_after) {
             resp = HTTP_RESP_BAD_REQUEST;
@@ -1911,7 +1913,7 @@ int web_api_v12_weights(BUFFER *wb, QUERY_WEIGHTS_REQUEST *qwr) {
 
     if(qwd.interrupted) {
         error = "interrupted";
-        resp = HTTP_RESP_BACKEND_FETCH_FAILED;
+        resp = HTTP_RESP_CLIENT_CLOSED_REQUEST;
         goto cleanup;
     }
 
@@ -2045,7 +2047,7 @@ print("\nprob", prob)
 
 static int double_expect(double v, const char *str, const char *descr) {
     char buf[100 + 1];
-    snprintfz(buf, 100, "%0.6f", v);
+    snprintfz(buf, sizeof(buf) - 1, "%0.6f", v);
     int ret = strcmp(buf, str) ? 1 : 0;
 
     fprintf(stderr, "%s %s, expected %s, got %s\n", ret?"FAILED":"OK", descr, str, buf);

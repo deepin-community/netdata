@@ -32,7 +32,7 @@ uint16_t aclk_send_bin_message_subtopic_pid(mqtt_wss_client client, char *msg, s
     const char *topic = aclk_get_topic(subtopic);
 
     if (unlikely(!topic)) {
-        error("Couldn't get topic. Aborting message send.");
+        netdata_log_error("Couldn't get topic. Aborting message send.");
         return 0;
     }
 
@@ -61,7 +61,7 @@ static int aclk_send_message_with_bin_payload(mqtt_wss_client client, json_objec
     int len;
 
     if (unlikely(!topic || topic[0] != '/')) {
-        error ("Full topic required!");
+        netdata_log_error("Full topic required!");
         json_object_put(msg);
         return HTTP_RESP_INTERNAL_SERVER_ERROR;
     }
@@ -86,7 +86,7 @@ static int aclk_send_message_with_bin_payload(mqtt_wss_client client, json_objec
     int rc = mqtt_wss_publish5(client, (char*)topic, NULL, full_msg, &freez_aclk_publish5b, full_msg_len, MQTT_WSS_PUB_QOS1, &packet_id);
 
     if (rc == MQTT_WSS_ERR_TOO_BIG_FOR_SERVER)
-        return HTTP_RESP_FORBIDDEN;
+        return HTTP_RESP_CONTENT_TOO_LONG;
 
 #ifdef NETDATA_INTERNAL_CHECKS
     aclk_stats_msg_published(packet_id);
@@ -172,7 +172,7 @@ void aclk_http_msg_v2_err(mqtt_wss_client client, const char *topic, const char 
     json_object_object_add(msg, "error-description", tmp);
 
     if (aclk_send_message_with_bin_payload(client, msg, topic, payload, payload_len)) {
-        error("Failed to send cancellation message for http reply %zu %s", payload_len, payload);
+        netdata_log_error("Failed to send cancellation message for http reply %zu %s", payload_len, payload);
     }
 }
 
@@ -194,15 +194,16 @@ int aclk_http_msg_v2(mqtt_wss_client client, const char *topic, const char *msg_
     int rc = aclk_send_message_with_bin_payload(client, msg, topic, payload, payload_len);
 
     switch (rc) {
-    case HTTP_RESP_FORBIDDEN:
-        aclk_http_msg_v2_err(client, topic, msg_id, rc, CLOUD_EC_REQ_REPLY_TOO_BIG, CLOUD_EMSG_REQ_REPLY_TOO_BIG, NULL, 0);
-        break;
-    case HTTP_RESP_INTERNAL_SERVER_ERROR:
-        aclk_http_msg_v2_err(client, topic, msg_id, rc, CLOUD_EC_FAIL_TOPIC, CLOUD_EMSG_FAIL_TOPIC, payload, payload_len);
-        break;
-    case HTTP_RESP_BACKEND_FETCH_FAILED:
-        aclk_http_msg_v2_err(client, topic, msg_id, rc, CLOUD_EC_SND_TIMEOUT, CLOUD_EMSG_SND_TIMEOUT, payload, payload_len);
-        break;
+        case HTTP_RESP_CONTENT_TOO_LONG:
+            aclk_http_msg_v2_err(client, topic, msg_id, rc, CLOUD_EC_REQ_REPLY_TOO_BIG, CLOUD_EMSG_REQ_REPLY_TOO_BIG, NULL, 0);
+            break;
+        case HTTP_RESP_INTERNAL_SERVER_ERROR:
+            aclk_http_msg_v2_err(client, topic, msg_id, rc, CLOUD_EC_FAIL_TOPIC, CLOUD_EMSG_FAIL_TOPIC, payload, payload_len);
+            break;
+        case HTTP_RESP_GATEWAY_TIMEOUT:
+        case HTTP_RESP_SERVICE_UNAVAILABLE:
+            aclk_http_msg_v2_err(client, topic, msg_id, rc, CLOUD_EC_SND_TIMEOUT, CLOUD_EMSG_SND_TIMEOUT, payload, payload_len);
+            break;
     }
     return rc ? rc : http_code;
 }
@@ -220,7 +221,7 @@ uint16_t aclk_send_agent_connection_update(mqtt_wss_client client, int reachable
 
     rrdhost_aclk_state_lock(localhost);
     if (unlikely(!localhost->aclk_state.claimed_id)) {
-        error("Internal error. Should not come here if not claimed");
+        netdata_log_error("Internal error. Should not come here if not claimed");
         rrdhost_aclk_state_unlock(localhost);
         return 0;
     }
@@ -233,7 +234,7 @@ uint16_t aclk_send_agent_connection_update(mqtt_wss_client client, int reachable
     rrdhost_aclk_state_unlock(localhost);
 
     if (!msg) {
-        error("Error generating agent::v1::UpdateAgentConnection payload");
+        netdata_log_error("Error generating agent::v1::UpdateAgentConnection payload");
         return 0;
     }
 
@@ -255,7 +256,7 @@ char *aclk_generate_lwt(size_t *size) {
 
     rrdhost_aclk_state_lock(localhost);
     if (unlikely(!localhost->aclk_state.claimed_id)) {
-        error("Internal error. Should not come here if not claimed");
+        netdata_log_error("Internal error. Should not come here if not claimed");
         rrdhost_aclk_state_unlock(localhost);
         return NULL;
     }
@@ -265,7 +266,7 @@ char *aclk_generate_lwt(size_t *size) {
     rrdhost_aclk_state_unlock(localhost);
 
     if (!msg)
-        error("Error generating agent::v1::UpdateAgentConnection payload for LWT");
+        netdata_log_error("Error generating agent::v1::UpdateAgentConnection payload for LWT");
 
     return msg;
 }

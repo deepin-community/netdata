@@ -43,6 +43,7 @@
 #define EBPF_CFG_MAPS_PER_CORE "maps per core"
 
 #define EBPF_CFG_UPDATE_EVERY "update every"
+#define EBPF_CFG_LIFETIME "lifetime"
 #define EBPF_CFG_UPDATE_APPS_EVERY_DEFAULT 10
 #define EBPF_CFG_PID_SIZE "pid table size"
 #define EBPF_CFG_APPLICATION "apps"
@@ -147,6 +148,7 @@ typedef struct ebpf_addresses {
     uint32_t hash;
     // We use long as address, because it matches system length
     unsigned long addr;
+    uint32_t type;
 } ebpf_addresses_t;
 
 extern char *ebpf_user_config_dir;
@@ -179,6 +181,17 @@ enum netdata_ebpf_map_type {
 enum netdata_controller {
     NETDATA_CONTROLLER_APPS_ENABLED,
     NETDATA_CONTROLLER_APPS_LEVEL,
+
+    // These index show the number of elements
+    // stored inside hash tables.
+    //
+    // We have indexes to count increase and
+    // decrease events, because __sync_fetch_and_sub
+    // generates compilation errors.
+    NETDATA_CONTROLLER_PID_TABLE_ADD,
+    NETDATA_CONTROLLER_PID_TABLE_DEL,
+    NETDATA_CONTROLLER_TEMP_TABLE_ADD,
+    NETDATA_CONTROLLER_TEMP_TABLE_DEL,
 
     NETDATA_CONTROLLER_END
 };
@@ -270,17 +283,46 @@ typedef enum netdata_apps_integration_flags {
 #define NETDATA_EBPF_STAT_DIMENSION_ARAL "aral"
 
 enum ebpf_threads_status {
-    NETDATA_THREAD_EBPF_RUNNING,
-    NETDATA_THREAD_EBPF_STOPPING,
-    NETDATA_THREAD_EBPF_STOPPED,
-    NETDATA_THREAD_EBPF_NOT_RUNNING
+    NETDATA_THREAD_EBPF_RUNNING,            // started by plugin
+    NETDATA_THREAD_EBPF_FUNCTION_RUNNING,   // started by function
+    NETDATA_THREAD_EBPF_STOPPING,           // stopping thread
+    NETDATA_THREAD_EBPF_STOPPED,            // thread stopped
+    NETDATA_THREAD_EBPF_NOT_RUNNING         // thread was never started
 };
 
+enum ebpf_global_table_values {
+    NETDATA_EBPF_GLOBAL_TABLE_PID_TABLE_ADD, // Count elements added inside PID table
+    NETDATA_EBPF_GLOBAL_TABLE_PID_TABLE_DEL, // Count elements removed from PID table
+    NETDATA_EBPF_GLOBAL_TABLE_TEMP_TABLE_ADD, // Count elements added inside TEMP table
+    NETDATA_EBPF_GLOBAL_TABLE_TEMP_TABLE_DEL,  // Count elements removed from TEMP table
+
+    NETDATA_EBPF_GLOBAL_TABLE_STATUS_END
+};
+
+typedef uint64_t netdata_idx_t;
+
 typedef struct ebpf_module {
-    const char *thread_name;
-    const char *config_name;
+    // Constants used with module
+    struct {
+        const char *thread_name;
+        const char *config_name;
+        const char *thread_description;
+    } info;
+
+    // Helpers used with plugin
+    struct {
+        void *(*start_routine)(void *);                             // the thread function
+        void (*apps_routine)(struct ebpf_module *em, void *ptr);    // the apps charts
+        void (*fnct_routine)(BUFFER *bf, struct ebpf_module *em);   // the function used for exteernal requests
+        const char *fcnt_name;                                      // name given to cloud
+        const char *fcnt_desc;                                      // description given about function
+        const char *fcnt_thread_chart_name;
+        int order_thread_chart;
+        const char *fcnt_thread_lifetime_name;
+        int order_thread_lifetime;
+    } functions;
+
     enum ebpf_threads_status enabled;
-    void *(*start_routine)(void *);
     int update_every;
     int global_charts;
     netdata_apps_integration_flags_t apps_charts;
@@ -289,7 +331,6 @@ typedef struct ebpf_module {
     netdata_run_mode_t mode;
     uint32_t thread_id;
     int optional;
-    void (*apps_routine)(struct ebpf_module *em, void *ptr);
     ebpf_local_maps_t *maps;
     ebpf_specify_name_t *names;
     uint32_t pid_map_size;
@@ -306,7 +347,17 @@ typedef struct ebpf_module {
     char memory_usage[NETDATA_EBPF_CHART_MEM_LENGTH];
     char memory_allocations[NETDATA_EBPF_CHART_MEM_LENGTH];
     int maps_per_core;
+
+    // period to run
+    uint32_t running_time; // internal usage, this is used to reset a value when a new request happens.
+    uint32_t lifetime;
+
+    netdata_idx_t hash_table_stats[NETDATA_EBPF_GLOBAL_TABLE_STATUS_END];
 } ebpf_module_t;
+
+#define EBPF_DEFAULT_LIFETIME 300
+// This will be present until all functions are merged. The deadline is planned for 68 years since plugin start
+#define EBPF_NON_FUNCTION_LIFE_TIME UINT_MAX
 
 int ebpf_get_kernel_version();
 int get_redhat_release();
@@ -336,9 +387,20 @@ void ebpf_update_map_size(struct bpf_map *map, ebpf_local_maps_t *lmap, ebpf_mod
 typedef struct netdata_ebpf_histogram {
     char *name;
     char *title;
+    char *ctx;
     int order;
     uint64_t histogram[NETDATA_EBPF_HIST_MAX_BINS];
 } netdata_ebpf_histogram_t;
+
+enum fs_btf_counters {
+    NETDATA_KEY_BTF_READ,
+    NETDATA_KEY_BTF_WRITE,
+    NETDATA_KEY_BTF_OPEN,
+    NETDATA_KEY_BTF_SYNC_ATTR,
+    NETDATA_KEY_BTF_OPEN2,
+
+    NETDATA_FS_BTF_END
+};
 
 typedef struct ebpf_filesystem_partitions {
     char *filesystem;
@@ -359,6 +421,14 @@ typedef struct ebpf_filesystem_partitions {
     ebpf_addresses_t addresses;
     uint64_t kernels;
     ebpf_local_maps_t *fs_maps;
+
+    // BPF structure
+#ifdef LIBBPF_MAJOR_VERSION
+    struct filesystem_bpf *fs_obj;
+#else
+    void *fs_obj;
+#endif
+    const char *functions[NETDATA_FS_BTF_END];
 } ebpf_filesystem_partitions_t;
 
 typedef struct ebpf_sync_syscalls {
@@ -407,9 +477,11 @@ void ebpf_update_map_type(struct bpf_map *map, ebpf_local_maps_t *w);
 void ebpf_define_map_type(ebpf_local_maps_t *maps, int maps_per_core, int kver);
 #endif
 
-void ebpf_update_kernel_memory_with_vector(ebpf_plugin_stats_t *report, ebpf_local_maps_t *maps);
+void ebpf_update_kernel_memory_with_vector(ebpf_plugin_stats_t *report, ebpf_local_maps_t *maps,
+                                           ebpf_stats_action_t action);
 void ebpf_update_kernel_memory(ebpf_plugin_stats_t *report, ebpf_local_maps_t *map, ebpf_stats_action_t action);
-void ebpf_statistic_create_aral_chart(char *name, ebpf_module_t *em);
+int ebpf_statistic_create_aral_chart(char *name, ebpf_module_t *em);
+void ebpf_statistic_obsolete_aral_chart(ebpf_module_t *em, int prio);
 void ebpf_send_data_aral_chart(ARAL *memory, ebpf_module_t *em);
 
 #endif /* NETDATA_EBPF_H */

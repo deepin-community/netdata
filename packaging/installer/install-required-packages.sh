@@ -28,6 +28,7 @@ PACKAGES_UPDATE_IPSETS=${PACKAGES_UPDATE_IPSETS-0}
 PACKAGES_NETDATA_DEMO_SITE=${PACKAGES_NETDATA_DEMO_SITE-0}
 PACKAGES_NETDATA_SENSORS=${PACKAGES_NETDATA_SENSORS-0}
 PACKAGES_NETDATA_DATABASE=${PACKAGES_NETDATA_DATABASE-1}
+PACKAGES_NETDATA_STREAMING_COMPRESSION=${PACKAGES_NETDATA_STREAMING_COMPRESSION-0}
 PACKAGES_NETDATA_EBPF=${PACKAGES_NETDATA_EBPF-1}
 
 # needed commands
@@ -180,10 +181,15 @@ get_os_release() {
   eval "$(grep -E "^(NAME|ID|ID_LIKE|VERSION|VERSION_ID)=" "${os_release_file}")"
   for x in "${ID}" ${ID_LIKE}; do
     case "${x,,}" in
-      almalinux | alpine | arch | centos | clear-linux-os | debian | fedora | gentoo | manjaro | opensuse-leap | ol | rhel | rocky | sabayon | sles | suse | ubuntu)
+      almalinux | alpine | arch | centos | clear-linux-os | debian | fedora | gentoo | manjaro | opensuse-leap | opensuse-tumbleweed | ol | rhel | rocky | sabayon | sles | suse | ubuntu)
         distribution="${x}"
-        version="${VERSION_ID}"
-        codename="${VERSION}"
+        if [[ "${ID}" = "opensuse-tumbleweed" ]]; then
+          version="tumbleweed"
+          codename="tumbleweed"
+        else
+          version="${VERSION_ID}"
+          codename="${VERSION}"
+        fi
         detection="${os_release_file}"
         break
         ;;
@@ -192,9 +198,10 @@ get_os_release() {
         ;;
     esac
   done
-  [ -z "${distribution}" ] && echo >&2 "Cannot find valid distribution in: ${ID} ${ID_LIKE}" && return 1
+  [[ -z "${distribution}" ]] && echo >&2 "Cannot find valid distribution in: \
+${ID} ${ID_LIKE}" && return 1
 
-  [ -z "${distribution}" ] && return 1
+  [[ -z "${distribution}" ]] && return 1
   return 0
 }
 
@@ -404,9 +411,9 @@ detect_package_manager_from_distribution() {
     centos* | clearos* | rocky* | almalinux*)
       package_installer=""
       tree="centos"
-      [ -n "${yum}" ] && package_installer="install_yum"
-      [ -n "${dnf}" ] && package_installer="install_dnf"
-      if [ "${IGNORE_INSTALLED}" -eq 0 ] && [ -z "${package_installer}" ]; then
+      [[ -n "${yum}" ]] && package_installer="install_yum"
+      [[ -n "${dnf}" ]] && package_installer="install_dnf"
+      if [[ "${IGNORE_INSTALLED}" -eq 0 ]] && [[ -z "${package_installer}" ]]; then
         echo >&2 "command 'yum' or 'dnf' is required to install packages on a '${distribution} ${version}' system."
         exit 1
       fi
@@ -415,9 +422,9 @@ detect_package_manager_from_distribution() {
     fedora* | redhat* | red\ hat* | rhel*)
       package_installer=
       tree="rhel"
-      [ -n "${yum}" ] && package_installer="install_yum"
-      [ -n "${dnf}" ] && package_installer="install_dnf"
-      if [ "${IGNORE_INSTALLED}" -eq 0 ] && [ -z "${package_installer}" ]; then
+      [[ -n "${yum}" ]] && package_installer="install_yum"
+      [[ -n "${dnf}" ]] && package_installer="install_dnf"
+      if [[ "${IGNORE_INSTALLED}" -eq 0 ]] && [[ -z "${package_installer}" ]]; then
         echo >&2 "command 'yum' or 'dnf' is required to install packages on a '${distribution} ${version}' system."
         exit 1
       fi
@@ -607,6 +614,8 @@ declare -A pkg_find=(
   ['gentoo']="sys-apps/findutils"
   ['fedora']="findutils"
   ['clearlinux']="findutils"
+  ['rhel']="findutils"
+  ['centos']="findutils"
   ['macos']="NOTREQUIRED"
   ['freebsd']="NOTREQUIRED"
   ['default']="WARNING|"
@@ -663,6 +672,28 @@ declare -A pkg_cmake=(
   ['default']="cmake"
 )
 
+# bison and flex are required by Fluent-Bit
+declare -A pkg_bison=(
+  ['default']="bison"
+)
+
+declare -A pkg_flex=(
+  ['default']="flex"
+)
+
+# fts-dev is required by Fluent-Bit on Alpine
+declare -A pkg_fts_dev=(
+  ['default']="NOTREQUIRED"
+  ['alpine']="musl-fts-dev" 
+  ['alpine-3.16.9']="fts-dev"
+)
+
+# cmake3 is required by Fluent-Bit on CentOS 7
+declare -A pkg_cmake3=(
+  ['default']="NOTREQUIRED"
+  ['centos-7']="cmake3"
+)
+
 declare -A pkg_json_c_dev=(
   ['alpine']="json-c-dev"
   ['arch']="json-c"
@@ -701,6 +732,19 @@ declare -A pkg_libatomic=(
   ['suse']="libatomic1"
   ['ubuntu']="libatomic1"
   ['default']="libatomic"
+)
+
+declare -A pkg_libsystemd_dev=(
+  ['alpine']="NOTREQUIRED"
+  ['arch']="NOTREQUIRED" # inherently present on systems actually using systemd
+  ['clearlinux']="system-os-dev"
+  ['debian']="libsystemd-dev"
+  ['freebsd']="NOTREQUIRED"
+  ['gentoo']="NOTREQUIRED" # inherently present on systems actually using systemd
+  ['macos']="NOTREQUIRED"
+  ['sabayon']="NOTREQUIRED" # inherently present on systems actually using systemd
+  ['ubuntu']="libsystemd-dev"
+  ['default']="systemd-devel"
 )
 
 declare -A pkg_bridge_utils=(
@@ -995,6 +1039,18 @@ declare -A pkg_lz4=(
   ['default']="lz4-devel"
 )
 
+declare -A pkg_zstd=(
+  ['alpine']="zstd-dev"
+  ['debian']="libzstd-dev"
+  ['ubuntu']="libzstd-dev"
+  ['gentoo']="app-arch/zstd"
+  ['clearlinux']="zstd-devel"
+  ['arch']="zstd"
+  ['macos']="zstd"
+  ['freebsd']="zstd"
+  ['default']="libzstd-devel"
+)
+
 declare -A pkg_libuv=(
   ['alpine']="libuv-dev"
   ['debian']="libuv1-dev"
@@ -1188,6 +1244,7 @@ packages() {
   require_cmd automake || suitable_package automake
   require_cmd pkg-config || suitable_package pkg-config
   require_cmd cmake || suitable_package cmake
+  require_cmd cmake3 || suitable_package cmake3
 
   # -------------------------------------------------------------------------
   # debugging tools for development
@@ -1210,6 +1267,8 @@ packages() {
     require_cmd tar || suitable_package tar
     require_cmd curl || suitable_package curl
     require_cmd gzip || suitable_package gzip
+    require_cmd bison || suitable_package bison
+    require_cmd flex || suitable_package flex
   fi
 
   # -------------------------------------------------------------------------
@@ -1241,7 +1300,9 @@ packages() {
     suitable_package libuuid-dev
     suitable_package libmnl-dev
     suitable_package json-c-dev
+    suitable_package fts-dev
     suitable_package libyaml-dev
+    suitable_package libsystemd-dev
   fi
 
   # -------------------------------------------------------------------------
@@ -1257,6 +1318,10 @@ packages() {
     suitable_package libuv
     suitable_package lz4
     suitable_package openssl
+  fi
+
+  if [ "${PACKAGES_NETDATA_STREAMING_COMPRESSION}" -ne 0 ]; then
+    suitable_package zstd
   fi
 
   # -------------------------------------------------------------------------
@@ -1901,6 +1966,7 @@ while [ -n "${1}" ]; do
       PACKAGES_NETDATA_SENSORS=1
       PACKAGES_NETDATA_DATABASE=1
       PACKAGES_NETDATA_EBPF=1
+      PACKAGES_NETDATA_STREAMING_COMPRESSION=1
       ;;
 
     netdata)
@@ -1908,6 +1974,7 @@ while [ -n "${1}" ]; do
       PACKAGES_NETDATA_PYTHON3=1
       PACKAGES_NETDATA_DATABASE=1
       PACKAGES_NETDATA_EBPF=1
+      PACKAGES_NETDATA_STREAMING_COMPRESSION=1
       ;;
 
     python | netdata-python)

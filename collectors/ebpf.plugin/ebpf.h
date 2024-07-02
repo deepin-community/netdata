@@ -31,6 +31,7 @@
 #include "daemon/main.h"
 
 #include "ebpf_apps.h"
+#include "ebpf_functions.h"
 #include "ebpf_cgroup.h"
 
 #define NETDATA_EBPF_OLD_CONFIG_FILE "ebpf.conf"
@@ -39,7 +40,10 @@
 #ifdef LIBBPF_MAJOR_VERSION // BTF code
 #include "includes/cachestat.skel.h"
 #include "includes/dc.skel.h"
+#include "includes/disk.skel.h"
 #include "includes/fd.skel.h"
+#include "includes/hardirq.skel.h"
+#include "includes/mdflush.skel.h"
 #include "includes/mount.skel.h"
 #include "includes/shm.skel.h"
 #include "includes/socket.skel.h"
@@ -48,8 +52,11 @@
 
 extern struct cachestat_bpf *cachestat_bpf_obj;
 extern struct dc_bpf *dc_bpf_obj;
+extern struct disk_bpf *disk_bpf_obj;
 extern struct fd_bpf *fd_bpf_obj;
+extern struct hardirq_bpf *hardirq_bpf_obj;
 extern struct mount_bpf *mount_bpf_obj;
+extern struct mdflush_bpf *mdflush_bpf_obj;
 extern struct shm_bpf *shm_bpf_obj;
 extern struct socket_bpf *socket_bpf_obj;
 extern struct swap_bpf *bpf_obj;
@@ -62,8 +69,6 @@ typedef struct netdata_syscall_stat {
     uint64_t ecall;                    // number of calls that returned error
     struct netdata_syscall_stat *next; // Link list
 } netdata_syscall_stat_t;
-
-typedef uint64_t netdata_idx_t;
 
 typedef struct netdata_publish_syscall {
     char *dimension;
@@ -94,6 +99,26 @@ typedef struct netdata_error_report {
     int err;
 } netdata_error_report_t;
 
+typedef struct netdata_ebpf_judy_pid {
+    ARAL *pid_table;
+
+    // Index for PIDs
+    struct {                            // support for multiple indexing engines
+        Pvoid_t JudyLArray;            // the hash table
+        RW_SPINLOCK rw_spinlock;        // protect the index
+    } index;
+} netdata_ebpf_judy_pid_t;
+
+typedef struct netdata_ebpf_judy_pid_stats {
+    char *cmdline;
+
+    // Index for Socket timestamp
+    struct {                            // support for multiple indexing engines
+        Pvoid_t JudyLArray;            // the hash table
+        RW_SPINLOCK rw_spinlock;        // protect the index
+    } socket_stats;
+} netdata_ebpf_judy_pid_stats_t;
+
 extern ebpf_module_t ebpf_modules[];
 enum ebpf_main_index {
     EBPF_MODULE_PROCESS_IDX,
@@ -112,6 +137,7 @@ enum ebpf_main_index {
     EBPF_MODULE_OOMKILL_IDX,
     EBPF_MODULE_SHM_IDX,
     EBPF_MODULE_MDFLUSH_IDX,
+    EBPF_MODULE_FUNCTION_IDX,
     /* THREADS MUST BE INCLUDED BEFORE THIS COMMENT */
     EBPF_OPTION_ALL_CHARTS,
     EBPF_OPTION_VERSION,
@@ -157,10 +183,14 @@ typedef struct ebpf_tracepoint {
 
 // Statistics charts
 #define NETDATA_EBPF_THREADS "ebpf_threads"
+#define NETDATA_EBPF_LIFE_TIME "ebpf_life_time"
 #define NETDATA_EBPF_LOAD_METHOD "ebpf_load_methods"
 #define NETDATA_EBPF_KERNEL_MEMORY "ebpf_kernel_memory"
 #define NETDATA_EBPF_HASH_TABLES_LOADED "ebpf_hash_tables_count"
 #define NETDATA_EBPF_HASH_TABLES_PER_CORE "ebpf_hash_tables_per_core"
+#define NETDATA_EBPF_HASH_TABLES_GLOBAL_ELEMENTS "ebpf_hash_tables_global_elements"
+#define NETDATA_EBPF_HASH_TABLES_INSERT_PID_ELEMENTS "ebpf_hash_tables_insert_pid_elements"
+#define NETDATA_EBPF_HASH_TABLES_REMOVE_PID_ELEMENTS "ebpf_hash_tables_remove_pid_elements"
 
 // Log file
 #define NETDATA_DEVELOPER_LOG_FILE "developer.log"
@@ -208,6 +238,7 @@ void ebpf_global_labels(netdata_syscall_stat_t *is,
 
 void ebpf_write_chart_cmd(char *type,
                                  char *id,
+                                 char *suffix,
                                  char *title,
                                  char *units,
                                  char *family,
@@ -235,8 +266,6 @@ void ebpf_create_chart(char *type,
                               int update_every,
                               char *module);
 
-void write_begin_chart(char *family, char *name);
-
 void write_chart_dimension(char *dim, long long value);
 
 void write_count_chart(char *name, char *family, netdata_publish_syscall_t *move, uint32_t end);
@@ -246,18 +275,47 @@ void write_err_chart(char *name, char *family, netdata_publish_syscall_t *move, 
 void write_io_chart(char *chart, char *family, char *dwrite, long long vwrite,
                            char *dread, long long vread);
 
-void ebpf_create_charts_on_apps(char *name,
-                                       char *title,
-                                       char *units,
-                                       char *family,
-                                       char *charttype,
-                                       int order,
-                                       char *algorithm,
-                                       struct ebpf_target *root,
-                                       int update_every,
-                                       char *module);
+/**
+ * Create Chart labels
+ *
+ * @param name    the label name.
+ * @param value   the label value.
+ * @param origin  the labeel source.
+ */
+static inline void ebpf_create_chart_labels(char *name, char *value, int source)
+{
+    fprintf(stdout, "CLABEL '%s' '%s' %d\n", name, value, source);
+}
 
-void write_end_chart();
+/**
+ * Commit label
+ *
+ * Write commit label to stdout
+ */
+static inline void ebpf_commit_label()
+{
+    fprintf(stdout, "CLABEL_COMMIT\n");
+}
+
+/**
+ * Write begin command on standard output
+ *
+ * @param family the chart family name
+ * @param name   the chart name
+ * @param metric the chart suffix (used with apps and cgroups)
+ */
+static inline void ebpf_write_begin_chart(char *family, char *name, char *metric)
+{
+    printf("BEGIN %s.%s%s\n", family, name, metric);
+}
+
+/**
+ * Write END command on stdout.
+ */
+static inline void ebpf_write_end_chart()
+{
+    printf("END\n");
+}
 
 int ebpf_enable_tracepoint(ebpf_tracepoint_t *tp);
 int ebpf_disable_tracepoint(ebpf_tracepoint_t *tp);
@@ -265,6 +323,9 @@ uint32_t ebpf_enable_tracepoints(ebpf_tracepoint_t *tps);
 
 void ebpf_pid_file(char *filename, size_t length);
 
+#define EBPF_PROGRAMS_SECTION "ebpf programs"
+
+#define EBPF_COMMON_DIMENSION_PERCENTAGE "%"
 #define EBPF_PROGRAMS_SECTION "ebpf programs"
 
 #define EBPF_COMMON_DIMENSION_PERCENTAGE "%"
@@ -304,16 +365,28 @@ void ebpf_cachestat_create_apps_charts(struct ebpf_module *em, void *root);
 void ebpf_one_dimension_write_charts(char *family, char *chart, char *dim, long long v1);
 collected_number get_value_from_structure(char *basis, size_t offset);
 void ebpf_update_pid_table(ebpf_local_maps_t *pid, ebpf_module_t *em);
-void ebpf_write_chart_obsolete(char *type, char *id, char *title, char *units, char *family,
+void ebpf_write_chart_obsolete(char *type, char *id, char *suffix, char *title, char *units, char *family,
                                       char *charttype, char *context, int order, int update_every);
 void write_histogram_chart(char *family, char *name, const netdata_idx_t *hist, char **dimensions, uint32_t end);
 void ebpf_update_disabled_plugin_stats(ebpf_module_t *em);
 ARAL *ebpf_allocate_pid_aral(char *name, size_t size);
 void ebpf_unload_legacy_code(struct bpf_object *objects, struct bpf_link **probe_links);
 
+void ebpf_read_global_table_stats(netdata_idx_t *stats, netdata_idx_t *values, int map_fd,
+                                  int maps_per_core, uint32_t begin, uint32_t end);
+void **ebpf_judy_insert_unsafe(PPvoid_t arr, Word_t key);
+netdata_ebpf_judy_pid_stats_t *ebpf_get_pid_from_judy_unsafe(PPvoid_t judy_array, uint32_t pid);
+
+void parse_network_viewer_section(struct config *cfg);
+void ebpf_clean_ip_structure(ebpf_network_viewer_ip_list_t **clean);
+void ebpf_clean_port_structure(ebpf_network_viewer_port_list_t **clean);
+void ebpf_read_local_addresses_unsafe();
+
 extern ebpf_filesystem_partitions_t localfs[];
 extern ebpf_sync_syscalls_t local_syscalls[];
-extern int ebpf_exit_plugin;
+extern bool ebpf_plugin_exit;
+void ebpf_stop_threads(int sig);
+extern netdata_ebpf_judy_pid_t ebpf_judy_pid;
 
 #define EBPF_MAX_SYNCHRONIZATION_TIME 300
 

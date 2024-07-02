@@ -3,6 +3,7 @@
 
 MAINTAINERCLEANFILES = $(srcdir)/Makefile.in
 CLEANFILES = \
+    install-service.sh \
     cron/netdata-updater-daily \
     freebsd/rc.d/netdata \
     initd/init.d/netdata \
@@ -26,6 +27,7 @@ dist_config_SCRIPTS = \
 
 dist_config_DATA = \
     .install-type \
+    netdata-updater.conf \
     $(NULL)
 
 libconfigvnodesdir=$(libconfigdir)/vnodes

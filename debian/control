@@ -1,12 +1,16 @@
 Source: netdata
 Section: net
 Priority: optional
-Maintainer: Cruise.zrz <Cruise.zrz@gmail.com>
+Maintainer: Daniel Baumann <daniel.baumann@progress-linux.org>
+Uploaders:
+ Lennart Weller <lhw@ring0.de>,
+ Federico Ceratto <federico@debian.org>,
 Build-Depends:
  debhelper-compat (= 13),
  dh-apache2,
  libcap-dev,
  libcups2-dev,
+ libh2o-dev-common,
  libjson-c-dev,
  libjudy-dev,
  liblz4-dev,
@@ -23,24 +27,20 @@ Build-Depends:
  zlib1g-dev,
 Rules-Requires-Root: no
 Standards-Version: 4.6.2
-Homepage: <insert the upstream URL, if relevant>
-#Vcs-Browser: https://salsa.debian.org/debian/netdata
-#Vcs-Git: https://salsa.debian.org/debian/netdata.git
+Homepage: https://www.netdata.cloud
+Vcs-Browser: https://git.progress-linux.org/users/daniel.baumann/debian/packages/netdata
+Vcs-Git: https://git.progress-linux.org/users/daniel.baumann/debian/packages/netdata
 
 Package: netdata
 Section: net
 Architecture: all
 Depends:
- netdata-core | netdata-core-no-sse,
+ netdata-core,
  netdata-plugins-bash,
  netdata-web,
  ${misc:Depends},
 Recommends:
  netdata-plugins-python,
-Breaks:
- netdata-plugins-nodejs,
-Replaces:
- netdata-plugins-nodejs,
 Description: real-time performance monitoring (metapackage)
  Netdata is distributed, real-time, performance and health monitoring for
  systems and applications. It provides insights of everything happening on the
@@ -57,12 +57,11 @@ Section: net
 Architecture: all
 Depends:
  apache2,
- netdata-core (>= ${source:Version}) | netdata-core-no-sse (>= ${source:Version}),
+ netdata-core (>= ${source:Version}),
  netdata-web (>= ${source:Version}),
  ${misc:Depends},
 Enhances:
  netdata-core,
- netdata-core-no-sse,
 Description: real-time performance monitoring (apache integration)
  Netdata is distributed, real-time, performance and health monitoring for
  systems and applications. It provides insights of everything happening on the
@@ -82,6 +81,7 @@ Pre-Depends:
 Depends:
  libcap2-bin,
  lsb-base,
+ passwd,
  sse2-support [i386],
  ${misc:Depends},
  ${shlibs:Depends},
@@ -94,14 +94,9 @@ Suggests:
  lm-sensors,
  nc,
 Breaks:
- netdata-plugins-bash (<< 1.19.0-2~),
- netdata-plugins-python (<< 1.17.0-1~),
-Conflicts:
- netdata-core-no-sse,
+ netdata-core-no-sse (<< 1.44),
 Replaces:
  netdata-core-no-sse,
- netdata-plugins-bash (<< 1.19.0-2~),
- netdata-plugins-python (<< 1.17.0-1~),
 Description: real-time performance monitoring (core)
  Netdata is distributed, real-time, performance and health monitoring for
  systems and applications. It provides insights of everything happening on the
@@ -116,40 +111,20 @@ Architecture: i386
 Pre-Depends:
  ${misc:Pre-Depends},
 Depends:
- libcap2-bin,
- lsb-base,
  ${misc:Depends},
- ${shlibs:Depends},
-Conflicts:
- netdata-core,
-Replaces:
- netdata-plugins-bash (<< 1.19.0-2~),
- netdata-plugins-python (<< 1.17.0-1~),
-Recommends:
- curl,
-Suggests:
- apcupsd,
- iproute2,
- iw,
- lm-sensors,
- nc,
-Breaks:
- netdata-plugins-bash (<< 1.19.0-2~),
- netdata-plugins-python (<< 1.17.0-1~),
-Description: real-time performance monitoring (core, no-sse build)
- Netdata is distributed, real-time, performance and health monitoring for
- systems and applications. It provides insights of everything happening on the
- systems it runs using interactive web dashboards.
+Description: real-time performance monitoring (transitional package)
+ Package to ease upgrading from older netdata-core-no-sse package to the new
+ netdata-core package.
  .
- This package contains the minimal core build without SSE2 optimizations for
- old systems. If unsure, use netdata-core instead.
+ This package can be purged at anytime once the netdata-core package has been
+ installed.
 
 Package: netdata-plugins-bash
 Section: net
 Architecture: all
 Multi-Arch: foreign
 Depends:
- netdata-core (>= ${source:Version}) | netdata-core-no-sse (>= ${source:Version}),
+ netdata-core (>= ${source:Version}),
  ${misc:Depends},
 Suggests:
  fping,
@@ -157,13 +132,6 @@ Provides:
  netdata-plugins,
 Enhances:
  netdata-core,
- netdata-core-no-sse,
-Breaks:
- netdata-core (<< 1.19.0-2~),
- netdata-core-no-sse (<< 1.19.0-2~),
-Replaces:
- netdata-core (<< 1.19.0-2~),
- netdata-core-no-sse (<< 1.19.0-2~),
 Description: real-time performance monitoring (bash plugins)
  Netdata is distributed, real-time, performance and health monitoring for
  systems and applications. It provides insights of everything happening on the
@@ -176,7 +144,7 @@ Section: net
 Architecture: all
 Multi-Arch: foreign
 Depends:
- netdata-core (>= ${source:Version}) | netdata-core-no-sse (>= ${source:Version}),
+ netdata-core (>= ${source:Version}),
  python3,
  python3-six,
  python3-urllib3 (>= 1.22),
@@ -190,13 +158,6 @@ Provides:
  netdata-plugins,
 Enhances:
  netdata-core,
- netdata-core-no-sse,
-Breaks:
- netdata-core (<< 1.17.0-1~),
- netdata-core-no-sse (<< 1.17.0-1~),
-Replaces:
- netdata-core (<< 1.17.0-1~),
- netdata-core-no-sse (<< 1.17.0-1~),
 Description: real-time performance monitoring (python plugins)
  Netdata is distributed, real-time, performance and health monitoring for
  systems and applications. It provides insights of everything happening on the
@@ -210,19 +171,13 @@ Architecture: all
 Depends:
  fonts-font-awesome,
  libjs-bootstrap,
- netdata-core (>= ${source:Version}) | netdata-core-no-sse (>= ${source:Version}),
+ netdata-core (>= ${source:Version}),
  ${misc:Depends},
-Conflicts:
- netdata-data,
-Replaces:
- netdata-data,
 Enhances:
  netdata-core,
- netdata-core-no-sse,
 Description: real-time performance monitoring (web)
  Netdata is distributed, real-time, performance and health monitoring for
  systems and applications. It provides insights of everything happening on the
  systems it runs using interactive web dashboards.
  .
  This package contains the web frontend.
-

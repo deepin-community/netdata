@@ -3,12 +3,12 @@
 Description=Real time performance monitoring
 
 # append here other services you want netdata to wait for them to start
-After=network.target httpd.service squid.service nfs-server.service mysqld.service mysql.service named.service postfix.service chronyd.service
+After=network.target
 
 [Service]
+LogNamespace=netdata
 Type=simple
-User=@netdata_user_POST@
-Group=netdata
+User=root
 RuntimeDirectory=netdata
 RuntimeDirectoryMode=0775
 PIDFile=/run/netdata/netdata.pid
@@ -60,6 +60,10 @@ CapabilityBoundingSet=CAP_SYS_CHROOT
 CapabilityBoundingSet=CAP_NET_ADMIN
 # is required for plugins that use sudo
 CapabilityBoundingSet=CAP_SETGID CAP_SETUID
+# is required to change file ownership
+CapabilityBoundingSet=CAP_CHOWN
+# is required for logs-management.plugin
+CapabilityBoundingSet=CAP_SYSLOG
 
 # Sandboxing
 ProtectSystem=full

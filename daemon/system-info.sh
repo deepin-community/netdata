@@ -57,7 +57,7 @@ if [ -z "${VIRTUALIZATION}" ]; then
     VIRTUALIZATION="unknown"
     VIRT_DETECTION="none"
   elif [ "$VIRTUALIZATION" != "none" ] && [ "$VIRTUALIZATION" != "unknown" ]; then
-    VIRTUALIZATION=$(virtualization_normalize_name $VIRTUALIZATION)
+    VIRTUALIZATION=$(virtualization_normalize_name "$VIRTUALIZATION")
   fi
 else
   # Passed from outside - probably in docker run
@@ -101,6 +101,10 @@ if [ "${CONTAINER}" = "unknown" ]; then
     CONT_DETECTION="kubernetes"
   fi
 
+  if [ "${KERNEL_NAME}" = FreeBSD ] && command -v sysctl && sysctl security.jail.jailed 2>/dev/null | grep -q "1$"; then
+    CONTAINER="jail"
+    CONT_DETECTION="sysctl"
+  fi
 fi
 
 # -------------------------------------------------------------------------------------------------
@@ -313,7 +317,7 @@ elif [ -r /proc/cpuinfo ]; then
   if (echo "${CPU_INFO_SOURCE}" | grep -qv procfs); then
     CPU_INFO_SOURCE="${CPU_INFO_SOURCE} procfs"
   fi
-  value=$(grep "cpu MHz" /proc/cpuinfo 2>/dev/null | grep -o "[0-9]*" | head -n 1 | awk '{print int($0*1000000)}')
+  value=$(grep "cpu MHz" /proc/cpuinfo 2>/dev/null | grep -o "[0-9]*" | head -n 1 | awk '{printf "%0.f",int($0*1000000)}')
   [ -n "$value" ] && CPU_FREQ="$value"
 fi
 

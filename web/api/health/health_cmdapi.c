@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Created by Christopher on 11/12/18.
 //
@@ -14,18 +15,16 @@
 void free_silencers(SILENCER *t) {
     if (!t) return;
     if (t->next) free_silencers(t->next);
-    debug(D_HEALTH, "HEALTH command API: Freeing silencer %s:%s:%s:%s:%s", t->alarms,
-          t->charts, t->contexts, t->hosts, t->families);
+    netdata_log_debug(D_HEALTH, "HEALTH command API: Freeing silencer %s:%s:%s:%s", t->alarms,
+          t->charts, t->contexts, t->hosts);
     simple_pattern_free(t->alarms_pattern);
     simple_pattern_free(t->charts_pattern);
     simple_pattern_free(t->contexts_pattern);
     simple_pattern_free(t->hosts_pattern);
-    simple_pattern_free(t->families_pattern);
     freez(t->alarms);
     freez(t->charts);
     freez(t->contexts);
     freez(t->hosts);
-    freez(t->families);
     freez(t);
     return;
 }
@@ -74,7 +73,6 @@ void health_silencers2json(BUFFER *wb) {
         j=health_silencers2json_entry(wb, HEALTH_CHART_KEY, silencer->charts, j);
         j=health_silencers2json_entry(wb, HEALTH_CONTEXT_KEY, silencer->contexts, j);
         j=health_silencers2json_entry(wb, HEALTH_HOST_KEY, silencer->hosts, j);
-        health_silencers2json_entry(wb, HEALTH_FAMILIES_KEY, silencer->families, j);
         j=0;
         buffer_strcat(wb, "\n\t\t}");
         i++;
@@ -96,12 +94,12 @@ void health_silencers2file(BUFFER *wb) {
     if(fd) {
         size_t written = (size_t)fprintf(fd, "%s", wb->buffer) ;
         if (written == wb->len ) {
-            info("Silencer changes written to %s", silencers_filename);
+            netdata_log_info("Silencer changes written to %s", silencers_filename);
         }
         fclose(fd);
         return;
     }
-    error("Silencer changes could not be written to %s. Error %s", silencers_filename, strerror(errno));
+    netdata_log_error("Silencer changes could not be written to %s. Error %s", silencers_filename, strerror(errno));
 }
 
 /**
@@ -133,7 +131,7 @@ int web_client_api_request_v1_mgmt_health(RRDHOST *host, struct web_client *w, c
         buffer_strcat(wb, HEALTH_CMDAPI_MSG_AUTHERROR);
         ret = HTTP_RESP_FORBIDDEN;
     } else {
-        debug(D_HEALTH, "HEALTH command API: Comparing secret '%s' to '%s'", w->auth_bearer_token, api_secret);
+        netdata_log_debug(D_HEALTH, "HEALTH command API: Comparing secret '%s' to '%s'", w->auth_bearer_token, api_secret);
         if (strcmp(w->auth_bearer_token, api_secret)) {
             buffer_strcat(wb, HEALTH_CMDAPI_MSG_AUTHERROR);
             ret = HTTP_RESP_FORBIDDEN;
@@ -146,7 +144,7 @@ int web_client_api_request_v1_mgmt_health(RRDHOST *host, struct web_client *w, c
                 if (!key || !*key) continue;
                 if (!value || !*value) continue;
 
-                debug(D_WEB_CLIENT, "%llu: API v1 health query param '%s' with value '%s'", w->id, key, value);
+                netdata_log_debug(D_WEB_CLIENT, "%llu: API v1 health query param '%s' with value '%s'", w->id, key, value);
 
                 // name and value are now the parameters
                 if (!strcmp(key, "cmd")) {

@@ -1,0 +1,148 @@
+syntax = "proto3";
+
+package alarms.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "alarms/v1;alarms";
+
+message SendAlarmLogHealth {
+    string node_id = 1;
+}
+
+message AlarmLogHealth {
+    string claim_id = 1;
+    string node_id = 2;
+    bool enabled = 3;
+    AlarmLogStatus status = 4;
+    LogEntries log_entries = 5;
+}
+
+message LogEntries {
+    int64 first_sequence_id = 1;
+    google.protobuf.Timestamp first_when = 2;
+
+    int64 last_sequence_id = 3;
+    google.protobuf.Timestamp last_when = 4;
+}
+
+enum AlarmLogStatus {
+    ALARM_LOG_STATUS_UNSPECIFIED = 0;
+    ALARM_LOG_STATUS_RUNNING = 1;
+    ALARM_LOG_STATUS_IDLE = 2;
+}
+
+message StartAlarmStreaming {
+    string node_id = 1;
+    uint64 batch_id = 2 [deprecated=true];
+    uint64 start_sequnce_id = 3 [deprecated=true];
+    // Instructs the agent to sync all configured alarms
+    bool resets = 4;
+}
+
+message SendAlarmCheckpoint {
+    string node_id = 1;
+    string claim_id = 2;
+}
+
+message AlarmCheckpoint {
+    string node_id = 1;
+    string claim_id = 2;
+    bytes checksum = 3;
+}
+
+message AlarmLogEntry {
+    string node_id = 1;
+    string claim_id = 2;
+
+    // The chart's id field
+    string chart = 3;
+    string name = 4;
+    string family = 5;
+    uint64 batch_id = 6 [deprecated=true];
+    uint64 sequence_id = 7 [deprecated=true];
+    uint64 when = 8;
+
+    string config_hash = 9;
+
+    int32 utc_offset = 10;
+    string timezone = 11;
+
+    // Paths that can be custom for the same alarm, but depend on installation path for each user. Should be here or in config ?
+    string exec_path = 12;
+    string conf_source = 13;
+    string command = 14;
+
+    // In seconds, uint32 is safe ?
+    uint32 duration = 15;
+    uint32 non_clear_duration = 16;
+
+    AlarmStatus status = 17;
+    AlarmStatus old_status = 18;
+    uint64 delay = 19;
+    uint64 delay_up_to_timestamp = 20;
+    // Todo: verify that we need these. sequence_id doesn't suffice?
+    //  uint64 updated_by_id = 12;
+    //  uint64 updates_id = 13;
+    uint64 last_repeat = 21;
+    bool silenced = 22;
+
+    // Check if string values are needed
+    string value_string = 23;
+    string old_value_string = 24;
+
+    double value = 25;
+    double old_value = 26;
+
+    // Updated alarm entry, when the status of the alarm has been updated by a later entry
+    bool updated = 27;
+
+    // Rendered_info
+    string rendered_info = 28;
+
+    // The chart's context field
+    string chart_context = 29;
+
+    // Counter of alert transitions for this alert chain
+    uint64 event_id = 30;
+
+    // A unique uuid for this alert event
+    string transition_id = 31;
+
+    // The chart's name field
+    string chart_name = 32;
+
+    // The rendered summary
+    string summary = 33;
+}
+
+enum AlarmStatus {
+    ALARM_STATUS_NULL = 0;
+    ALARM_STATUS_UNKNOWN = 1;
+    ALARM_STATUS_REMOVED = 2;
+    ALARM_STATUS_NOT_A_NUMBER = 3;
+    ALARM_STATUS_CLEAR = 4;
+    ALARM_STATUS_WARNING = 5;
+    ALARM_STATUS_CRITICAL = 6;
+}
+
+// SendAlarmSnapshot: send from cloud to the agent, to initiate an AlarmSnapshot image of current alarms back to the cloud
+message SendAlarmSnapshot {
+    string node_id = 1;
+    string claim_id = 2;
+    uint64 snapshot_id = 3 [deprecated=true];
+    uint64 sequence_id = 4 [deprecated=true];
+    string snapshot_uuid = 5;
+}
+
+// Agent responds with AlarmSnapshot to a SendAlarmSnapshot message
+message AlarmSnapshot{
+    string node_id = 1;
+    string claim_id = 2;
+    uint64 snapshot_id = 3 [deprecated=true]; // Same id from SendAlarmSnapshot message
+    uint32 chunks = 4; // In case full snapshot can not fit in a single message, indicates the total number of messages for this snapshot_id
+    uint32 chunk_size = 5; // How many alerts this chunk contains
+    uint32 chunk = 6; // Chunk index of this message
+    repeated AlarmLogEntry alarms = 7; // a list of AlarmLogEntry's
+    string snapshot_uuid = 8;
+}

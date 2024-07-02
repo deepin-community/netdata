@@ -42,7 +42,7 @@ void aral_judy_init(void) {
     for(size_t Words = 0; Words <= MAX_JUDY_SIZE_TO_ARAL; Words++)
         if(judy_sizes_config[Words]) {
             char buf[30+1];
-            snprintfz(buf, 30, "judy-%zu", Words * sizeof(Word_t));
+            snprintfz(buf, sizeof(buf) - 1, "judy-%zu", Words * sizeof(Word_t));
             judy_sizes_aral[Words] = aral_create(
                     buf,
                     Words * sizeof(Word_t),
@@ -249,7 +249,7 @@ static avl_tree_lock malloc_trace_index = {
     .avl_tree = {
         .root = NULL,
         .compar = malloc_trace_compare},
-    .rwlock = NETDATA_RWLOCK_INITIALIZER
+    .rwlock = AVL_LOCK_INITIALIZER
 };
 
 int malloc_trace_walkthrough(int (*callback)(void *item, void *data), void *data) {
@@ -370,7 +370,7 @@ static struct malloc_header *malloc_get_header(void *ptr, const char *caller, co
     struct malloc_header *t = (struct malloc_header *)ret;
 
     if(t->signature.magic != 0x0BADCAFE) {
-        error("pointer %p is not our pointer (called %s() from %zu@%s, %s()).", ptr, caller, line, file, function);
+        netdata_log_error("pointer %p is not our pointer (called %s() from %zu@%s, %s()).", ptr, caller, line, file, function);
         return NULL;
     }
 
@@ -1043,20 +1043,23 @@ void netdata_fix_chart_id(char *s) {
 }
 
 static int memory_file_open(const char *filename, size_t size) {
-    // info("memory_file_open('%s', %zu", filename, size);
+    // netdata_log_info("memory_file_open('%s', %zu", filename, size);
 
     int fd = open(filename, O_RDWR | O_CREAT | O_NOATIME, 0664);
     if (fd != -1) {
         if (lseek(fd, size, SEEK_SET) == (off_t) size) {
             if (write(fd, "", 1) == 1) {
                 if (ftruncate(fd, size))
-                    error("Cannot truncate file '%s' to size %zu. Will use the larger file.", filename, size);
+                    netdata_log_error("Cannot truncate file '%s' to size %zu. Will use the larger file.", filename, size);
             }
-            else error("Cannot write to file '%s' at position %zu.", filename, size);
+            else
+                netdata_log_error("Cannot write to file '%s' at position %zu.", filename, size);
         }
-        else error("Cannot seek file '%s' to size %zu.", filename, size);
+        else
+            netdata_log_error("Cannot seek file '%s' to size %zu.", filename, size);
     }
-    else error("Cannot create/open file '%s'.", filename);
+    else
+        netdata_log_error("Cannot create/open file '%s'.", filename);
 
     return fd;
 }
@@ -1065,7 +1068,8 @@ inline int madvise_sequential(void *mem, size_t len) {
     static int logger = 1;
     int ret = madvise(mem, len, MADV_SEQUENTIAL);
 
-    if (ret != 0 && logger-- > 0) error("madvise(MADV_SEQUENTIAL) failed.");
+    if (ret != 0 && logger-- > 0)
+        netdata_log_error("madvise(MADV_SEQUENTIAL) failed.");
     return ret;
 }
 
@@ -1073,7 +1077,8 @@ inline int madvise_random(void *mem, size_t len) {
     static int logger = 1;
     int ret = madvise(mem, len, MADV_RANDOM);
 
-    if (ret != 0 && logger-- > 0) error("madvise(MADV_RANDOM) failed.");
+    if (ret != 0 && logger-- > 0)
+        netdata_log_error("madvise(MADV_RANDOM) failed.");
     return ret;
 }
 
@@ -1081,7 +1086,8 @@ inline int madvise_dontfork(void *mem, size_t len) {
     static int logger = 1;
     int ret = madvise(mem, len, MADV_DONTFORK);
 
-    if (ret != 0 && logger-- > 0) error("madvise(MADV_DONTFORK) failed.");
+    if (ret != 0 && logger-- > 0)
+        netdata_log_error("madvise(MADV_DONTFORK) failed.");
     return ret;
 }
 
@@ -1089,7 +1095,8 @@ inline int madvise_willneed(void *mem, size_t len) {
     static int logger = 1;
     int ret = madvise(mem, len, MADV_WILLNEED);
 
-    if (ret != 0 && logger-- > 0) error("madvise(MADV_WILLNEED) failed.");
+    if (ret != 0 && logger-- > 0)
+        netdata_log_error("madvise(MADV_WILLNEED) failed.");
     return ret;
 }
 
@@ -1097,7 +1104,8 @@ inline int madvise_dontneed(void *mem, size_t len) {
     static int logger = 1;
     int ret = madvise(mem, len, MADV_DONTNEED);
 
-    if (ret != 0 && logger-- > 0) error("madvise(MADV_DONTNEED) failed.");
+    if (ret != 0 && logger-- > 0)
+        netdata_log_error("madvise(MADV_DONTNEED) failed.");
     return ret;
 }
 
@@ -1106,7 +1114,8 @@ inline int madvise_dontdump(void *mem __maybe_unused, size_t len __maybe_unused)
     static int logger = 1;
     int ret = madvise(mem, len, MADV_DONTDUMP);
 
-    if (ret != 0 && logger-- > 0) error("madvise(MADV_DONTDUMP) failed.");
+    if (ret != 0 && logger-- > 0)
+        netdata_log_error("madvise(MADV_DONTDUMP) failed.");
     return ret;
 #else
     return 0;
@@ -1118,7 +1127,8 @@ inline int madvise_mergeable(void *mem __maybe_unused, size_t len __maybe_unused
     static int logger = 1;
     int ret = madvise(mem, len, MADV_MERGEABLE);
 
-    if (ret != 0 && logger-- > 0) error("madvise(MADV_MERGEABLE) failed.");
+    if (ret != 0 && logger-- > 0)
+        netdata_log_error("madvise(MADV_MERGEABLE) failed.");
     return ret;
 #else
     return 0;
@@ -1127,7 +1137,7 @@ inline int madvise_mergeable(void *mem __maybe_unused, size_t len __maybe_unused
 
 void *netdata_mmap(const char *filename, size_t size, int flags, int ksm, bool read_only, int *open_fd)
 {
-    // info("netdata_mmap('%s', %zu", filename, size);
+    // netdata_log_info("netdata_mmap('%s', %zu", filename, size);
 
     // MAP_SHARED is used in memory mode map
     // MAP_PRIVATE is used in memory mode ram and save
@@ -1177,9 +1187,9 @@ void *netdata_mmap(const char *filename, size_t size, int flags, int ksm, bool r
         if(fd != -1 && fd_for_mmap == -1) {
             if (lseek(fd, 0, SEEK_SET) == 0) {
                 if (read(fd, mem, size) != (ssize_t) size)
-                    info("Cannot read from file '%s'", filename);
+                    netdata_log_info("Cannot read from file '%s'", filename);
             }
-            else info("Cannot seek to beginning of file '%s'.", filename);
+            else netdata_log_info("Cannot seek to beginning of file '%s'.", filename);
         }
 
         // madvise_sequential(mem, size);
@@ -1215,12 +1225,12 @@ int memory_file_save(const char *filename, void *mem, size_t size) {
 
     int fd = open(tmpfilename, O_RDWR | O_CREAT | O_NOATIME, 0664);
     if (fd < 0) {
-        error("Cannot create/open file '%s'.", filename);
+        netdata_log_error("Cannot create/open file '%s'.", filename);
         return -1;
     }
 
     if (write(fd, mem, size) != (ssize_t) size) {
-        error("Cannot write to file '%s' %ld bytes.", filename, (long) size);
+        netdata_log_error("Cannot write to file '%s' %ld bytes.", filename, (long) size);
         close(fd);
         return -1;
     }
@@ -1228,7 +1238,7 @@ int memory_file_save(const char *filename, void *mem, size_t size) {
     close(fd);
 
     if (rename(tmpfilename, filename)) {
-        error("Cannot rename '%s' to '%s'", tmpfilename, filename);
+        netdata_log_error("Cannot rename '%s' to '%s'", tmpfilename, filename);
         return -1;
     }
 
@@ -1259,17 +1269,19 @@ char *fgets_trim_len(char *buf, size_t buf_size, FILE *fp, size_t *len) {
     return s;
 }
 
+// vsnprintfz() returns the number of bytes actually written - after possible truncation
 int vsnprintfz(char *dst, size_t n, const char *fmt, va_list args) {
     if(unlikely(!n)) return 0;
 
     int size = vsnprintf(dst, n, fmt, args);
     dst[n - 1] = '\0';
 
-    if (unlikely((size_t) size > n)) size = (int)n;
+    if (unlikely((size_t) size >= n)) size = (int)(n - 1);
 
     return size;
 }
 
+// snprintfz() returns the number of bytes actually written - after possible truncation
 int snprintfz(char *dst, size_t n, const char *fmt, ...) {
     va_list args;
 
@@ -1298,7 +1310,7 @@ unsigned long end_tsc(void) {
 int recursively_delete_dir(const char *path, const char *reason) {
     DIR *dir = opendir(path);
     if(!dir) {
-        error("Cannot read %s directory to be deleted '%s'", reason?reason:"", path);
+        netdata_log_error("Cannot read %s directory to be deleted '%s'", reason?reason:"", path);
         return -1;
     }
 
@@ -1321,16 +1333,16 @@ int recursively_delete_dir(const char *path, const char *reason) {
             continue;
         }
 
-        info("Deleting %s file '%s'", reason?reason:"", fullpath);
+        netdata_log_info("Deleting %s file '%s'", reason?reason:"", fullpath);
         if(unlikely(unlink(fullpath) == -1))
-            error("Cannot delete %s file '%s'", reason?reason:"", fullpath);
+            netdata_log_error("Cannot delete %s file '%s'", reason?reason:"", fullpath);
         else
             ret++;
     }
 
-    info("Deleting empty directory '%s'", path);
+    netdata_log_info("Deleting empty directory '%s'", path);
     if(unlikely(rmdir(path) == -1))
-        error("Cannot delete empty directory '%s'", path);
+        netdata_log_error("Cannot delete empty directory '%s'", path);
     else
         ret++;
 
@@ -1365,7 +1377,7 @@ static int is_virtual_filesystem(const char *path, char **reason) {
     return 0;
 }
 
-int verify_netdata_host_prefix() {
+int verify_netdata_host_prefix(bool log_msg) {
     if(!netdata_configured_host_prefix)
         netdata_configured_host_prefix = "";
 
@@ -1398,13 +1410,16 @@ int verify_netdata_host_prefix() {
     if(is_virtual_filesystem(path, &reason) == -1)
         goto failed;
 
-    if(netdata_configured_host_prefix && *netdata_configured_host_prefix)
-        info("Using host prefix directory '%s'", netdata_configured_host_prefix);
+    if (netdata_configured_host_prefix && *netdata_configured_host_prefix) {
+        if (log_msg)
+            netdata_log_info("Using host prefix directory '%s'", netdata_configured_host_prefix);
+    }
 
     return 0;
 
 failed:
-    error("Ignoring host prefix '%s': path '%s' %s", netdata_configured_host_prefix, path, reason);
+    if (log_msg)
+        netdata_log_error("Ignoring host prefix '%s': path '%s' %s", netdata_configured_host_prefix, path, reason);
     netdata_configured_host_prefix = "";
     return -1;
 }
@@ -1512,18 +1527,18 @@ int path_is_file(const char *path, const char *subpath) {
 
 void recursive_config_double_dir_load(const char *user_path, const char *stock_path, const char *subpath, int (*callback)(const char *filename, void *data), void *data, size_t depth) {
     if(depth > 3) {
-        error("CONFIG: Max directory depth reached while reading user path '%s', stock path '%s', subpath '%s'", user_path, stock_path, subpath);
+        netdata_log_error("CONFIG: Max directory depth reached while reading user path '%s', stock path '%s', subpath '%s'", user_path, stock_path, subpath);
         return;
     }
 
     char *udir = strdupz_path_subpath(user_path, subpath);
     char *sdir = strdupz_path_subpath(stock_path, subpath);
 
-    debug(D_HEALTH, "CONFIG traversing user-config directory '%s', stock config directory '%s'", udir, sdir);
+    netdata_log_debug(D_HEALTH, "CONFIG traversing user-config directory '%s', stock config directory '%s'", udir, sdir);
 
     DIR *dir = opendir(udir);
     if (!dir) {
-        error("CONFIG cannot open user-config directory '%s'.", udir);
+        netdata_log_error("CONFIG cannot open user-config directory '%s'.", udir);
     }
     else {
         struct dirent *de = NULL;
@@ -1533,7 +1548,7 @@ void recursive_config_double_dir_load(const char *user_path, const char *stock_p
                     (de->d_name[0] == '.' && de->d_name[1] == '\0') ||
                     (de->d_name[0] == '.' && de->d_name[1] == '.' && de->d_name[2] == '\0')
                         ) {
-                    debug(D_HEALTH, "CONFIG ignoring user-config directory '%s/%s'", udir, de->d_name);
+                    netdata_log_debug(D_HEALTH, "CONFIG ignoring user-config directory '%s/%s'", udir, de->d_name);
                     continue;
                 }
 
@@ -1548,24 +1563,24 @@ void recursive_config_double_dir_load(const char *user_path, const char *stock_p
                 if(path_is_file(udir, de->d_name) &&
                    len > 5 && !strcmp(&de->d_name[len - 5], ".conf")) {
                     char *filename = strdupz_path_subpath(udir, de->d_name);
-                    debug(D_HEALTH, "CONFIG calling callback for user file '%s'", filename);
+                    netdata_log_debug(D_HEALTH, "CONFIG calling callback for user file '%s'", filename);
                     callback(filename, data);
                     freez(filename);
                     continue;
                 }
             }
 
-            debug(D_HEALTH, "CONFIG ignoring user-config file '%s/%s' of type %d", udir, de->d_name, (int)de->d_type);
+            netdata_log_debug(D_HEALTH, "CONFIG ignoring user-config file '%s/%s' of type %d", udir, de->d_name, (int)de->d_type);
         }
 
         closedir(dir);
     }
 
-    debug(D_HEALTH, "CONFIG traversing stock config directory '%s', user config directory '%s'", sdir, udir);
+    netdata_log_debug(D_HEALTH, "CONFIG traversing stock config directory '%s', user config directory '%s'", sdir, udir);
 
     dir = opendir(sdir);
     if (!dir) {
-        error("CONFIG cannot open stock config directory '%s'.", sdir);
+        netdata_log_error("CONFIG cannot open stock config directory '%s'.", sdir);
     }
     else {
         if (strcmp(udir, sdir)) {
@@ -1576,7 +1591,7 @@ void recursive_config_double_dir_load(const char *user_path, const char *stock_p
                         (de->d_name[0] == '.' && de->d_name[1] == '\0') ||
                         (de->d_name[0] == '.' && de->d_name[1] == '.' && de->d_name[2] == '\0')
                         ) {
-                        debug(D_HEALTH, "CONFIG ignoring stock config directory '%s/%s'", sdir, de->d_name);
+                        netdata_log_debug(D_HEALTH, "CONFIG ignoring stock config directory '%s/%s'", sdir, de->d_name);
                         continue;
                     }
 
@@ -1596,7 +1611,7 @@ void recursive_config_double_dir_load(const char *user_path, const char *stock_p
                     if(path_is_file(sdir, de->d_name) && !path_is_file(udir, de->d_name) &&
                         len > 5 && !strcmp(&de->d_name[len - 5], ".conf")) {
                         char *filename = strdupz_path_subpath(sdir, de->d_name);
-                        debug(D_HEALTH, "CONFIG calling callback for stock file '%s'", filename);
+                        netdata_log_debug(D_HEALTH, "CONFIG calling callback for stock file '%s'", filename);
                         callback(filename, data);
                         freez(filename);
                         continue;
@@ -1604,13 +1619,13 @@ void recursive_config_double_dir_load(const char *user_path, const char *stock_p
 
                 }
 
-                debug(D_HEALTH, "CONFIG ignoring stock-config file '%s/%s' of type %d", udir, de->d_name, (int)de->d_type);
+                netdata_log_debug(D_HEALTH, "CONFIG ignoring stock-config file '%s/%s' of type %d", udir, de->d_name, (int)de->d_type);
             }
         }
         closedir(dir);
     }
 
-    debug(D_HEALTH, "CONFIG done traversing user-config directory '%s', stock config directory '%s'", udir, sdir);
+    netdata_log_debug(D_HEALTH, "CONFIG done traversing user-config directory '%s', stock config directory '%s'", udir, sdir);
 
     freez(udir);
     freez(sdir);
@@ -1618,7 +1633,7 @@ void recursive_config_double_dir_load(const char *user_path, const char *stock_p
 
 // Returns the number of bytes read from the file if file_size is not NULL.
 // The actual buffer has an extra byte set to zero (not included in the count).
-char *read_by_filename(char *filename, long *file_size)
+char *read_by_filename(const char *filename, long *file_size)
 {
     FILE *f = fopen(filename, "r");
     if (!f)
@@ -1684,129 +1699,28 @@ char *find_and_replace(const char *src, const char *find, const char *replace, c
     return value;
 }
 
-inline int pluginsd_space(char c) {
-    switch(c) {
-        case ' ':
-        case '\t':
-        case '\r':
-        case '\n':
-        case '=':
-            return 1;
 
-        default:
-            return 0;
-    }
-}
+BUFFER *run_command_and_get_output_to_buffer(const char *command, int max_line_length) {
+    BUFFER *wb = buffer_create(0, NULL);
 
-inline int config_isspace(char c)
-{
-    switch (c) {
-        case ' ':
-        case '\t':
-        case '\r':
-        case '\n':
-        case ',':
-            return 1;
+    pid_t pid;
+    FILE *fp = netdata_popen(command, &pid, NULL);
 
-        default:
-            return 0;
-    }
-}
-
-// split a text into words, respecting quotes
-inline size_t quoted_strings_splitter(char *str, char **words, size_t max_words, int (*custom_isspace)(char))
-{
-    char *s = str, quote = 0;
-    size_t i = 0;
-
-    // skip all white space
-    while (unlikely(custom_isspace(*s)))
-        s++;
-
-    if(unlikely(!*s)) {
-        words[i] = NULL;
-        return 0;
-    }
-
-    // check for quote
-    if (unlikely(*s == '\'' || *s == '"')) {
-        quote = *s; // remember the quote
-        s++;        // skip the quote
-    }
-
-    // store the first word
-    words[i++] = s;
-
-    // while we have something
-    while (likely(*s)) {
-        // if it is an escape
-        if (unlikely(*s == '\\' && s[1])) {
-            s += 2;
-            continue;
+    if(fp) {
+        char buffer[max_line_length + 1];
+        while (fgets(buffer, max_line_length, fp)) {
+            buffer[max_line_length] = '\0';
+            buffer_strcat(wb, buffer);
         }
-
-        // if it is a quote
-        else if (unlikely(*s == quote)) {
-            quote = 0;
-            *s = ' ';
-            continue;
-        }
-
-        // if it is a space
-        else if (unlikely(quote == 0 && custom_isspace(*s))) {
-            // terminate the word
-            *s++ = '\0';
-
-            // skip all white space
-            while (likely(custom_isspace(*s)))
-                s++;
-
-            // check for a quote
-            if (unlikely(*s == '\'' || *s == '"')) {
-                quote = *s; // remember the quote
-                s++;        // skip the quote
-            }
-
-            // if we reached the end, stop
-            if (unlikely(!*s))
-                break;
-
-            // store the next word
-            if (likely(i < max_words))
-                words[i++] = s;
-            else
-                break;
-        }
-
-        // anything else
-        else
-            s++;
+    }
+    else {
+        buffer_free(wb);
+        netdata_log_error("Failed to execute command '%s'.", command);
+        return NULL;
     }
 
-    if (i < max_words)
-        words[i] = NULL;
-
-    return i;
-}
-
-inline size_t pluginsd_split_words(char *str, char **words, size_t max_words)
-{
-    return quoted_strings_splitter(str, words, max_words, pluginsd_space);
-}
-
-bool bitmap256_get_bit(BITMAP256 *ptr, uint8_t idx) {
-    if (unlikely(!ptr))
-        return false;
-    return (ptr->data[idx / 64] & (1ULL << (idx % 64)));
-}
-
-void bitmap256_set_bit(BITMAP256 *ptr, uint8_t idx, bool value) {
-    if (unlikely(!ptr))
-        return;
-    if (likely(value))
-        ptr->data[idx / 64] |= (1ULL << (idx % 64));
-    else
-        ptr->data[idx / 64] &= ~(1ULL << (idx % 64));
+    netdata_pclose(NULL, fp, pid);
+    return wb;
 }
 
 bool run_command_and_copy_output_to_stdout(const char *command, int max_line_length) {
@@ -1819,7 +1733,7 @@ bool run_command_and_copy_output_to_stdout(const char *command, int max_line_len
             fprintf(stdout, "%s", buffer);
     }
     else {
-        error("Failed to execute command '%s'.", command);
+        netdata_log_error("Failed to execute command '%s'.", command);
         return false;
     }
 
@@ -1837,7 +1751,7 @@ void for_each_open_fd(OPEN_FD_ACTION action, OPEN_FD_EXCLUDE excluded_fds){
             if(!(excluded_fds & OPEN_FD_EXCLUDE_STDERR)) (void)close(STDERR_FILENO);
 #if defined(HAVE_CLOSE_RANGE)
             if(close_range(STDERR_FILENO + 1, ~0U, 0) == 0) return;
-            error("close_range() failed, will try to close fds one by one");
+            netdata_log_error("close_range() failed, will try to close fds one by one");
 #endif
             break;
         case OPEN_FD_ACTION_FD_CLOEXEC:
@@ -1846,7 +1760,7 @@ void for_each_open_fd(OPEN_FD_ACTION action, OPEN_FD_EXCLUDE excluded_fds){
             if(!(excluded_fds & OPEN_FD_EXCLUDE_STDERR)) (void)fcntl(STDERR_FILENO, F_SETFD, FD_CLOEXEC);
 #if defined(HAVE_CLOSE_RANGE) && defined(CLOSE_RANGE_CLOEXEC) // Linux >= 5.11, FreeBSD >= 13.1
             if(close_range(STDERR_FILENO + 1, ~0U, CLOSE_RANGE_CLOEXEC) == 0) return;
-            error("close_range() failed, will try to mark fds for closing one by one");
+            netdata_log_error("close_range() failed, will try to mark fds for closing one by one");
 #endif
             break;
         default:
@@ -1999,7 +1913,7 @@ void timing_action(TIMING_ACTION action, TIMING_STEP step) {
                 );
             }
 
-            info("TIMINGS REPORT:\n%sTIMINGS REPORT:                        total # %10zu, t %11.2f ms",
+            netdata_log_info("TIMINGS REPORT:\n%sTIMINGS REPORT:                        total # %10zu, t %11.2f ms",
                  buffer_tostring(wb), total_reqs, (double)total_usec / USEC_PER_MS);
 
             memcpy(timings2, timings3, sizeof(timings2));
@@ -2010,6 +1924,7 @@ void timing_action(TIMING_ACTION action, TIMING_STEP step) {
     }
 }
 
+#ifdef ENABLE_HTTPS
 int hash256_string(const unsigned char *string, size_t size, char *hash) {
     EVP_MD_CTX *ctx;
     ctx = EVP_MD_CTX_create();
@@ -2033,4 +1948,150 @@ int hash256_string(const unsigned char *string, size_t size, char *hash) {
     }
     EVP_MD_CTX_destroy(ctx);
     return 1;
+}
+#endif
+
+
+bool rrdr_relative_window_to_absolute(time_t *after, time_t *before, time_t now) {
+    if(!now) now = now_realtime_sec();
+
+    int absolute_period_requested = -1;
+    time_t before_requested = *before;
+    time_t after_requested = *after;
+
+    // allow relative for before (smaller than API_RELATIVE_TIME_MAX)
+    if(ABS(before_requested) <= API_RELATIVE_TIME_MAX) {
+        // if the user asked for a positive relative time,
+        // flip it to a negative
+        if(before_requested > 0)
+            before_requested = -before_requested;
+
+        before_requested = now + before_requested;
+        absolute_period_requested = 0;
+    }
+
+    // allow relative for after (smaller than API_RELATIVE_TIME_MAX)
+    if(ABS(after_requested) <= API_RELATIVE_TIME_MAX) {
+        if(after_requested > 0)
+            after_requested = -after_requested;
+
+        // if the user didn't give an after, use the number of points
+        // to give a sane default
+        if(after_requested == 0)
+            after_requested = -600;
+
+        // since the query engine now returns inclusive timestamps
+        // it is awkward to return 6 points when after=-5 is given
+        // so for relative queries we add 1 second, to give
+        // more predictable results to users.
+        after_requested = before_requested + after_requested + 1;
+        absolute_period_requested = 0;
+    }
+
+    if(absolute_period_requested == -1)
+        absolute_period_requested = 1;
+
+    // check if the parameters are flipped
+    if(after_requested > before_requested) {
+        long long t = before_requested;
+        before_requested = after_requested;
+        after_requested = t;
+    }
+
+    // if the query requests future data
+    // shift the query back to be in the present time
+    // (this may also happen because of the rules above)
+    if(before_requested > now) {
+        time_t delta = before_requested - now;
+        before_requested -= delta;
+        after_requested  -= delta;
+    }
+
+    *before = before_requested;
+    *after = after_requested;
+
+    return (absolute_period_requested != 1);
+}
+
+// Returns 1 if an absolute period was requested or 0 if it was a relative period
+bool rrdr_relative_window_to_absolute_query(time_t *after, time_t *before, time_t *now_ptr, bool unittest_running) {
+    time_t now = now_realtime_sec() - 1;
+
+    if(now_ptr)
+        *now_ptr = now;
+
+    time_t before_requested = *before;
+    time_t after_requested = *after;
+
+    int absolute_period_requested = rrdr_relative_window_to_absolute(&after_requested, &before_requested, now);
+
+    time_t absolute_minimum_time = now - (10 * 365 * 86400);
+    time_t absolute_maximum_time = now + (1 * 365 * 86400);
+
+    if (after_requested < absolute_minimum_time && !unittest_running)
+        after_requested = absolute_minimum_time;
+
+    if (after_requested > absolute_maximum_time && !unittest_running)
+        after_requested = absolute_maximum_time;
+
+    if (before_requested < absolute_minimum_time && !unittest_running)
+        before_requested = absolute_minimum_time;
+
+    if (before_requested > absolute_maximum_time && !unittest_running)
+        before_requested = absolute_maximum_time;
+
+    *before = before_requested;
+    *after = after_requested;
+
+    return (absolute_period_requested != 1);
+}
+
+int netdata_base64_decode(const char *encoded, char *decoded, size_t decoded_size) {
+    static const unsigned char base64_table[256] = {
+            ['A'] = 0, ['B'] = 1, ['C'] = 2, ['D'] = 3, ['E'] = 4, ['F'] = 5, ['G'] = 6, ['H'] = 7,
+            ['I'] = 8, ['J'] = 9, ['K'] = 10, ['L'] = 11, ['M'] = 12, ['N'] = 13, ['O'] = 14, ['P'] = 15,
+            ['Q'] = 16, ['R'] = 17, ['S'] = 18, ['T'] = 19, ['U'] = 20, ['V'] = 21, ['W'] = 22, ['X'] = 23,
+            ['Y'] = 24, ['Z'] = 25, ['a'] = 26, ['b'] = 27, ['c'] = 28, ['d'] = 29, ['e'] = 30, ['f'] = 31,
+            ['g'] = 32, ['h'] = 33, ['i'] = 34, ['j'] = 35, ['k'] = 36, ['l'] = 37, ['m'] = 38, ['n'] = 39,
+            ['o'] = 40, ['p'] = 41, ['q'] = 42, ['r'] = 43, ['s'] = 44, ['t'] = 45, ['u'] = 46, ['v'] = 47,
+            ['w'] = 48, ['x'] = 49, ['y'] = 50, ['z'] = 51, ['0'] = 52, ['1'] = 53, ['2'] = 54, ['3'] = 55,
+            ['4'] = 56, ['5'] = 57, ['6'] = 58, ['7'] = 59, ['8'] = 60, ['9'] = 61, ['+'] = 62, ['/'] = 63,
+            [0 ... '+' - 1] = 255,
+            ['+' + 1 ... '/' - 1] = 255,
+            ['9' + 1 ... 'A' - 1] = 255,
+            ['Z' + 1 ... 'a' - 1] = 255,
+            ['z' + 1 ... 255] = 255
+    };
+
+    size_t count = 0;
+    unsigned int tmp = 0;
+    int i, bit;
+
+    if (decoded_size < 1)
+        return 0; // Buffer size must be at least 1 for null termination
+
+    for (i = 0, bit = 0; encoded[i]; i++) {
+        unsigned char value = base64_table[(unsigned char)encoded[i]];
+        if (value > 63)
+            return -1; // Invalid character in input
+
+        tmp = tmp << 6 | value;
+        if (++bit == 4) {
+            if (count + 3 >= decoded_size) break; // Stop decoding if buffer is full
+            decoded[count++] = (tmp >> 16) & 0xFF;
+            decoded[count++] = (tmp >> 8) & 0xFF;
+            decoded[count++] = tmp & 0xFF;
+            tmp = 0;
+            bit = 0;
+        }
+    }
+
+    if (bit > 0 && count + 1 < decoded_size) {
+        tmp <<= 6 * (4 - bit);
+        if (bit > 2 && count + 1 < decoded_size) decoded[count++] = (tmp >> 16) & 0xFF;
+        if (bit > 3 && count + 1 < decoded_size) decoded[count++] = (tmp >> 8) & 0xFF;
+    }
+
+    decoded[count] = '\0'; // Null terminate the output string
+    return count;
 }

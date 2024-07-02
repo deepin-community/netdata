@@ -7,16 +7,16 @@ to any node's dashboard for troubleshooting performance issues or anomalies usin
 Cloud](https://user-images.githubusercontent.com/1153921/119035218-2eebb700-b964-11eb-8b74-4ec2df0e457c.png)
 
 Each War Room's Nodes tab is populated based on the nodes you added to that specific War Room. Each node occupies a
-single row, first featuring that node's alarm status (yellow for warnings, red for critical alarms) and operating
+single row, first featuring that node's alert status (yellow for warnings, red for critical alerts) and operating
 system, some essential information about the node, followed by columns of user-defined key metrics represented in
 real-time charts.
 
 Use the [Overview](https://github.com/netdata/netdata/blob/master/docs/cloud/visualize/overview.md) for monitoring an infrastructure in real time using
 composite charts and Netdata's familiar dashboard UI.
 
-Check the [War Room docs](https://github.com/netdata/netdata/blob/master/docs/cloud/war-rooms.md) for details on the utility bar, which contains the [node
-filter](https://github.com/netdata/netdata/blob/master/docs/cloud/war-rooms.md#node-filter) and the [timeframe
-selector](https://github.com/netdata/netdata/blob/master/docs/cloud/war-rooms.md#play-pause-force-play-and-timeframe-selector).
+Check the [node
+filter](https://github.com/netdata/netdata/blob/master/docs/cloud/visualize/node-filter.md) and the [Visualization date time controls
+selector](https://github.com/netdata/netdata/blob/master/docs/dashboard/visualization-date-and-time-controls.md) for tools available on the utility bar.
 
 ## Add and customize metrics columns
 
